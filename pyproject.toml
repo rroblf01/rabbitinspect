@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rabbitinspect"
-version = "0.2.0"
+version = "1.0.0"
 description = "Python code performance analyzer written in Rust — detects unused variables, None comparisons, list vs generator, and more"
 readme = "README.md"
 authors = [

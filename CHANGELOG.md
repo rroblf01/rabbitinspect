@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-05-31
+
+### Added
+
+#### New checks (18 new, total 107)
+
+| Code | Rule | Fix |
+|------|------|-----|
+| RAB090 | Public function parameter missing type annotation | ❌ |
+| RAB091 | Function missing return type annotation | ❌ |
+| RAB092 | Class attribute missing type annotation | ❌ |
+| RAB093 | Module-level variable missing type annotation | ❌ |
+| RAB094 | `Any` type annotation used, prefer concrete type | ❌ |
+| RAB095 | Default value incompatible with type annotation | ❌ |
+| RAB096 | Unused import | ❌ |
+| RAB097 | Debugging `print()` / `breakpoint()` / `pdb.set_trace()` left in code | ❌ |
+| RAB098 | Import inside function/class body, move to module level | ❌ |
+| RAB099 | Duplicate key/element in dict/set literal | ❌ |
+| RAB100 | Redundant `elif` after `return`/`raise`/`break`/`continue` | ❌ |
+| RAB103 | Self-comparison (`x == x`) always True/False | ❌ |
+| RAB104 | Pass-through generator `list(x for x in y)` → `list(y)` | ❌ |
+| RAB105 | Inconsistent return statements (mixed bare and valued) | ❌ |
+| RAB106 | Too broad `except Exception:` catch | ❌ |
+| RAB107 | TODO/FIXME/HACK/XXX comment left in code | ❌ |
+| RAB108 | `__all__` contains non-string elements | ❌ |
+| RAB109 | Class name should use CamelCase convention | ❌ |
+| RAB110 | Function name should use snake_case convention | ❌ |
+| RAB111 | Module-level constant should use UPPER_CASE naming | ❌ |
+| RAB112 | Unnecessary `pass` in non-empty body | ✅ |
+
+### Fixed
+- `assert_no_findings` now ignores all new rule codes by default to avoid breaking existing tests
+- All fixture files updated with bad examples for new rules
+
 ## [0.2.0] - 2026-05-31
 
 ### Added
