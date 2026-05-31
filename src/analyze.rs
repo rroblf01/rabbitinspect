@@ -19,8 +19,13 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088",     "RAB089",
     "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
     "RAB097", "RAB098", "RAB099",
+    "RAB100",
     "RAB101", "RAB102",
+    "RAB103", "RAB104",
     "RAB106",
+    "RAB107",
+    "RAB109",
+    "RAB110", "RAB111",
     "RAB112",
 ];
 
@@ -202,6 +207,13 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut module_var_type = crate::checks::ModuleVarTypeChecker;
     let mut any_annotation = crate::checks::AnyAnnotationChecker;
     let mut type_default = crate::checks::TypeDefaultMismatchChecker;
+    let mut redundant_elif = crate::checks::RedundantElifChecker;
+    let mut self_comp = crate::checks::SelfComparisonChecker;
+    let mut pass_through = crate::checks::PassThroughGenChecker;
+    let mut todo_check = crate::checks::TodoCommentChecker::new();
+    let mut class_name = crate::checks::ClassNameChecker;
+    let mut func_name = crate::checks::FunctionNameChecker;
+    let mut const_name = crate::checks::ConstantNameChecker::new();
     let mut debug_leftover = crate::checks::DebugLeftoverChecker;
     let mut import_in_func = crate::checks::ImportInFunctionChecker::new();
     let mut duplicate_key = crate::checks::DuplicateKeyChecker;
@@ -296,6 +308,13 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut module_var_type,
         &mut any_annotation,
         &mut type_default,
+        &mut redundant_elif,
+        &mut self_comp,
+        &mut pass_through,
+        &mut todo_check,
+        &mut class_name,
+        &mut func_name,
+        &mut const_name,
         &mut debug_leftover,
         &mut import_in_func,
         &mut duplicate_key,

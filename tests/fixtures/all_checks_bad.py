@@ -487,3 +487,36 @@ y_any: Any = None
 
 def bad_type_default(x: str = None):
     pass
+
+
+def bad_redundant_elif(x):
+    if x > 0:
+        return x
+    elif x == 0:
+        pass
+    elif x < 0:
+        pass
+
+
+def bad_self_comparison(x):
+    if x == x:
+        pass
+
+
+def bad_passthrough_gen(items):
+    return list(x for x in items)
+
+
+# TODO: fix this later
+y = 1
+
+
+class bad_class_name:
+    pass
+
+
+def BadFunctionName():
+    pass
+
+
+my_constant = 42

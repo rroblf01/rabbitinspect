@@ -3988,6 +3988,248 @@ impl Checker for TypeDefaultMismatchChecker {
     }
 }
 
+// ── RAB100: Redundant elif after return/raise/break/continue ──────────────
+
+pub struct RedundantElifChecker;
+
+impl Checker for RedundantElifChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::If(i) = stmt else { return };
+        if i.orelse.is_empty() { return; }
+        // Check if body ends with a terminal statement
+        let Some(last) = i.body.last() else { return };
+        let is_terminal = matches!(last, Stmt::Return(_) | Stmt::Raise(_) | Stmt::Break(_) | Stmt::Continue(_));
+        if !is_terminal { return; }
+        // Check if orelse is an elif chain
+        let is_elif = i.orelse.len() == 1 && matches!(&i.orelse[0], Stmt::If(_));
+        if !is_elif { return; }
+
+        let range = i.range();
+        let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+        let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB100".to_string(),
+            message: "Redundant 'elif' after return/raise/break/continue, merge into body".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB103: Self-comparison (x == x) ────────────────────────────────────
+
+pub struct SelfComparisonChecker;
+
+impl Checker for SelfComparisonChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Compare(c) = expr else { return };
+        // Compare left with each comparator
+        let mut all_self = true;
+        for comp in &c.comparators {
+            if !exprs_are_equal(&c.left, comp) {
+                all_self = false;
+                break;
+            }
+        }
+        if !all_self { return; }
+
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB103".to_string(),
+            message: "Self-comparison always evaluates to True/False, check the logic".to_string(),
+            fix: None,
+        });
+    }
+}
+
+fn exprs_are_equal(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Name(na), Expr::Name(nb)) => na.id == nb.id,
+        (Expr::Constant(ca), Expr::Constant(cb)) => {
+            format!("{:?}", ca.value) == format!("{:?}", cb.value)
+        }
+        _ => false,
+    }
+}
+
+// ── RAB104: Pass-through generator inside list()/set()/tuple() ──────────
+
+pub struct PassThroughGenChecker;
+
+impl Checker for PassThroughGenChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let func_name = match &*c.func {
+            Expr::Name(n) if matches!(n.id.as_str(), "list" | "set" | "tuple" | "frozenset") => n.id.as_str(),
+            _ => return,
+        };
+        if c.args.len() != 1 { return; }
+        let Expr::GeneratorExp(ge) = &c.args[0] else { return };
+        if ge.generators.len() != 1 { return; }
+        let gen = &ge.generators[0];
+        if !gen.ifs.is_empty() { return; }
+        // Check if the generator expression is just "var for var in iter" (pass-through)
+        let is_passthrough = match (&*ge.elt, &gen.target) {
+            (Expr::Name(elt), Expr::Name(target)) => elt.id == target.id,
+            _ => false,
+        };
+        if !is_passthrough { return; }
+
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let iter_src = expr_to_source(source, &gen.iter);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB104".to_string(),
+            message: format!("Use '{}({})' instead of '{}(x for x in {})'", func_name, iter_src, func_name, iter_src),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB107: TODO/FIXME/HACK comments ────────────────────────────────────
+
+pub struct TodoCommentChecker {
+    done: bool,
+}
+
+impl TodoCommentChecker {
+    pub fn new() -> Self { Self { done: false } }
+}
+
+impl Checker for TodoCommentChecker {
+    fn visit_stmt(&mut self, _stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if self.done { return; }
+        self.done = true;
+        // Scan all lines for TODO/FIXME/HACK/XXX comments
+        for (i, &line_start) in line_starts.iter().enumerate() {
+            let line_end = line_starts.get(i + 1).copied().unwrap_or(source.len());
+            let line = &source[line_start..line_end];
+            let stripped = line.trim_start();
+            if !stripped.starts_with('#') { continue; }
+            let upper = stripped.to_uppercase();
+            let has_todo = upper.contains("TODO") || upper.contains("FIXME") || upper.contains("HACK") || upper.contains("XXX");
+            if !has_todo { continue; }
+            let (line_num, col) = byte_to_line_col(line_start, line_starts);
+            findings.push(Finding {
+                line: line_num, col, end_line: line_num, end_col: 0,
+                code: "RAB107".to_string(),
+                message: format!("Comment contains TODO/FIXME/HACK/XXX: '{}'", stripped.trim()),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB109: Class name should be CamelCase ─────────────────────────────
+
+pub struct ClassNameChecker;
+
+impl Checker for ClassNameChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::ClassDef(c) = stmt else { return };
+        let name = c.name.as_str();
+        if name.chars().all(|c| c == '_') { return; }
+        let starts_upper = name.chars().next().map_or(false, |c| c.is_uppercase());
+        let has_underscore = name.contains('_');
+        if starts_upper && !has_underscore { return; }
+
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB109".to_string(),
+            message: format!("Class name '{}' should use CamelCase convention", name),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB110: Function name should be snake_case ─────────────────────────
+
+pub struct FunctionNameChecker;
+
+impl Checker for FunctionNameChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let name = match stmt {
+            Stmt::FunctionDef(f) => f.name.as_str(),
+            Stmt::AsyncFunctionDef(f) => f.name.as_str(),
+            _ => return,
+        };
+        // Skip dunder methods like __init__, __str__
+        if name.starts_with("__") && name.ends_with("__") { return; }
+        // Skip private methods starting with _
+        if name.starts_with('_') && name.len() > 1 && name.as_bytes()[1] != b'_' { return; }
+        let has_upper = name.chars().any(|c| c.is_uppercase());
+        let has_underscore = name.contains('_');
+        if !has_upper || has_underscore { return; }
+
+        let range = stmt.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB110".to_string(),
+            message: format!("Function name '{}' should use snake_case convention", name),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB111: Module-level constant should be UPPER_CASE ──────────────────
+
+pub struct ConstantNameChecker {
+    depth: u32,
+}
+
+impl ConstantNameChecker {
+    pub fn new() -> Self { Self { depth: 0 } }
+}
+
+impl Checker for ConstantNameChecker {
+    fn enter_scope(&mut self) { self.depth += 1; }
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if self.depth != 1 { return; } // Module level only
+        let Stmt::Assign(a) = stmt else { return };
+        if a.targets.len() != 1 { return; }
+        let Expr::Name(n) = &a.targets[0] else { return };
+        let name = n.id.as_str();
+        if name.starts_with('_') { return; }
+        let is_constant_value = matches!(&*a.value, Expr::Constant(_));
+        if !is_constant_value { return; }
+        // Check if name is UPPER_CASE
+        let is_upper = name.chars().all(|c| c.is_uppercase() || c == '_');
+        if is_upper { return; }
+
+        let range = n.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB111".to_string(),
+            message: format!("Module-level constant '{}' should use UPPER_CASE naming", name),
+            fix: None,
+        });
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {

@@ -76,6 +76,13 @@ All notable changes to this project will be documented in this file.
 | RAB093 | Module-level variable missing type annotation | ❌ |
 | RAB094 | `Any` type annotation used, prefer concrete type | ❌ |
 | RAB095 | Default value incompatible with type annotation | ❌ |
+| RAB100 | Redundant `elif` after `return`/`raise`/`break`/`continue` | ❌ |
+| RAB103 | Self-comparison (`x == x`) always True/False | ❌ |
+| RAB104 | Pass-through generator `list(x for x in y)` → `list(y)` | ❌ |
+| RAB107 | TODO/FIXME/HACK/XXX comment left in code | ❌ |
+| RAB109 | Class name should use CamelCase convention | ❌ |
+| RAB110 | Function name should use snake_case convention | ❌ |
+| RAB111 | Module-level constant should use UPPER_CASE naming | ❌ |
 
 - Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
 - Rust+PyO3 analysis engine

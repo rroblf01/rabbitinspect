@@ -182,6 +182,15 @@ fixed = apply_fixes(source, fixes)
 | **RAB097** | Debugging `print()` / `breakpoint()` / `pdb.set_trace()` left in code | ❌ |
 | **RAB098** | Import inside function/class body, move to module level | ❌ |
 | **RAB099** | Duplicate key/element in dict/set literal | ❌ |
+| **RAB100** | Redundant `elif` after `return`/`raise`/`break`/`continue` | ❌ |
+| **RAB103** | Self-comparison (`x == x`) always True/False | ❌ |
+| **RAB104** | Pass-through generator `list(x for x in y)` → `list(y)` | ❌ |
+| **RAB106** | Too broad `except Exception:` catch | ❌ |
+| **RAB107** | TODO/FIXME/HACK/XXX comment left in code | ❌ |
+| **RAB109** | Class name should use CamelCase convention | ❌ |
+| **RAB110** | Function name should use snake_case convention | ❌ |
+| **RAB111** | Module-level constant should use UPPER_CASE naming | ❌ |
+| **RAB112** | Unnecessary `pass` in non-empty body | ✅ |
 | **RAB101** | Cyclomatic complexity > 10 | ❌ |
 | **RAB102** | Cognitive complexity > 15 | ❌ |
 | **RAB106** | Too broad `except Exception:` catch | ❌ |

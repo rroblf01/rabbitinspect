@@ -11,7 +11,8 @@ def check_code(source, expected_codes):
 
 def assert_no_findings(source, ignore_codes=None):
     default_ignore = {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
-                       "RAB097", "RAB098", "RAB099", "RAB106", "RAB112"}
+                       "RAB097", "RAB098", "RAB099", "RAB100", "RAB103", "RAB104",
+                       "RAB106", "RAB107", "RAB109", "RAB110", "RAB111", "RAB112"}
     if ignore_codes is not None:
         ignore_codes = default_ignore | ignore_codes
     else:
@@ -855,6 +856,148 @@ class TestRAB094AnyAnnotation:
         assert_no_findings("def foo(x: str) -> None: pass", ignore_codes={"RAB001"})
 
 
+class TestRAB100RedundantElif:
+    def test_redundant_elif(self):
+        check_code("""
+if x > 0:
+    return x
+elif x == 0:
+    pass
+elif x < 0:
+    pass
+""", {"RAB100"})
+
+    def test_no_warning_no_elif(self):
+        assert_no_findings("""
+if x > 0:
+    return x
+else:
+    return 0
+""", ignore_codes={"RAB007"})
+
+    def test_no_warning_not_terminal(self):
+        assert_no_findings("""
+if x > 0:
+    print(1)
+elif x == 0:
+    pass
+""")
+
+
+class TestRAB103SelfComparison:
+    def test_self_eq(self):
+        check_code("if x == x: pass", {"RAB103"})
+
+    def test_self_not_eq(self):
+        check_code("if x != x: pass", {"RAB103"})
+
+    def test_self_gt(self):
+        check_code("if x > x: pass", {"RAB103"})
+
+    def test_no_warning_normal(self):
+        assert_no_findings("if x == y: pass")
+
+    def test_no_warning_constant(self):
+        assert_no_findings("if 1 == 1: pass")
+
+
+class TestRAB104PassThroughGen:
+    def test_list_passthrough(self):
+        check_code("result = list(x for x in items)", {"RAB104"})
+
+    def test_set_passthrough(self):
+        check_code("result = set(x for x in items)", {"RAB104"})
+
+    def test_tuple_passthrough(self):
+        check_code("result = tuple(x for x in items)", {"RAB104"})
+
+    def test_frozenset_passthrough(self):
+        check_code("result = frozenset(x for x in items)", {"RAB104"})
+
+    def test_no_warning_transform(self):
+        assert_no_findings("result = list(x * 2 for x in items)")
+
+    def test_no_warning_direct(self):
+        assert_no_findings("result = list(items)")
+
+    def test_no_warning_filter(self):
+        assert_no_findings("result = list(x for x in items if x > 0)")
+
+
+class TestRAB107TodoComment:
+    def test_todo_comment(self):
+        check_code("# TODO: fix this later\nx = 1", {"RAB107"})
+
+    def test_fixme_comment(self):
+        check_code("# FIXME: this is broken\nx = 1", {"RAB107"})
+
+    def test_hack_comment(self):
+        check_code("# HACK: workaround\nx = 1", {"RAB107"})
+
+    def test_xxx_comment(self):
+        check_code("# XXX: review\nx = 1", {"RAB107"})
+
+    def test_no_warning_normal_comment(self):
+        assert_no_findings("# normal comment\nx = 1")
+
+    def test_no_warning_no_comment(self):
+        assert_no_findings("x = 1", ignore_codes={"RAB093"})
+
+
+class TestRAB109ClassName:
+    def test_snake_case_class(self):
+        check_code("class my_class: pass", {"RAB109"})
+
+    def test_lowercase_class(self):
+        check_code("class myclass: pass", {"RAB109"})
+
+    def test_no_warning_camelcase(self):
+        assert_no_findings("class MyClass: pass")
+
+    def test_no_warning_single_upper(self):
+        assert_no_findings("class A: pass")
+
+
+class TestRAB110FunctionName:
+    def test_camelcase_function(self):
+        check_code("def MyFunc(): pass", {"RAB110"})
+
+    def test_pascalcase_function(self):
+        check_code("def MyFunction(): pass", {"RAB110"})
+
+    def test_no_warning_snake_case(self):
+        assert_no_findings("def my_function() -> None: pass", ignore_codes={"RAB001"})
+
+    def test_no_warning_dunder(self):
+        assert_no_findings("def __init__(self) -> None: pass", ignore_codes={"RAB001"})
+
+    def test_no_warning_private(self):
+        assert_no_findings("def _helper() -> None: pass", ignore_codes={"RAB001"})
+
+    def test_async_func(self):
+        check_code("async def MyFunc(): pass", {"RAB110"})
+
+    def test_no_warning_already_underscore(self):
+        assert_no_findings("def my_func() -> None: pass", ignore_codes={"RAB001"})
+
+
+class TestRAB111ConstantName:
+    def test_lowercase_constant(self):
+        check_code("my_const = 42", {"RAB111"})
+
+    def test_no_warning_uppercase(self):
+        assert_no_findings("MY_CONST = 42", ignore_codes={"RAB001"})
+
+    def test_no_warning_non_constant(self):
+        assert_no_findings("my_var = get_value()", ignore_codes={"RAB001", "RAB093"})
+
+    def test_no_warning_private(self):
+        assert_no_findings("_private = 42")
+
+    def test_no_warning_inside_function(self):
+        assert_no_findings("def foo():\n    my_var = 42", ignore_codes={"RAB001", "RAB022"})
+
+
 class TestRAB095TypeDefaultMismatch:
     def test_none_default_with_concrete_type(self):
         check_code("def foo(x: str = None): pass", {"RAB095"})
@@ -909,8 +1052,13 @@ class TestEndToEndAll:
                      "RAB043", "RAB044", "RAB045",
                      "RAB090", "RAB091", "RAB092", "RAB093",
                      "RAB097", "RAB098", "RAB099",
+                     "RAB100",
                      "RAB101", "RAB102",
+                     "RAB103", "RAB104",
                      "RAB106",
+                     "RAB107",
+                     "RAB109",
+                     "RAB110", "RAB111",
                      "RAB112"}
         for code in all_codes:
             assert code in codes, f"Expected {code} not found in {codes}"
@@ -932,7 +1080,8 @@ class TestEndToEndAll:
                              "RAB101", "RAB102"}
         for code in forbidden_in_good:
             if code in {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
-                         "RAB097", "RAB098", "RAB101", "RAB102", "RAB106", "RAB112"}:
+                         "RAB097", "RAB098", "RAB100", "RAB101", "RAB102", "RAB103", "RAB104",
+                         "RAB106", "RAB107", "RAB109", "RAB110", "RAB111", "RAB112"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
 
