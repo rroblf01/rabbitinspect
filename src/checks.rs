@@ -73,7 +73,8 @@ impl Checker for UnusedVarsChecker {
                 });
             }
         }
-        if let Some((parent_assigned, parent_used)) = self.scope_stack.pop() {
+        if let Some((parent_assigned, mut parent_used)) = self.scope_stack.pop() {
+            parent_used.extend(std::mem::take(&mut self.used));
             self.assigned = parent_assigned;
             self.used = parent_used;
         }
@@ -237,6 +238,18 @@ impl Checker for NoneComparisonChecker {
 
 pub struct LenZeroChecker;
 
+fn needs_parens(s: &str) -> bool {
+    s.contains(' ') || s.contains("and") || s.contains("or") || s.contains("if") || s.contains("for")
+}
+
+fn not_expr(s: &str) -> String {
+    if needs_parens(s) {
+        format!("not ({})", s)
+    } else {
+        format!("not {}", s)
+    }
+}
+
 fn is_len_call(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -288,7 +301,7 @@ impl Checker for LenZeroChecker {
             let (message, replacement) = match &c.ops[0] {
                 CmpOp::Eq => (
                     "Use 'not x' instead of 'len(x) == 0' for emptiness check",
-                    format!("not {}", arg_src),
+                    not_expr(&arg_src),
                 ),
                 CmpOp::NotEq => (
                     "Use 'x' instead of 'len(x) != 0' for non-emptiness check",
@@ -300,11 +313,11 @@ impl Checker for LenZeroChecker {
                 ),
                 CmpOp::Lt => (
                     "Use 'not x' instead of 'len(x) < 1' for emptiness check",
-                    format!("not {}", arg_src),
+                    not_expr(&arg_src),
                 ),
                 CmpOp::LtE => (
                     "Use 'not x' instead of 'len(x) <= 0' for emptiness check",
-                    format!("not {}", arg_src),
+                    not_expr(&arg_src),
                 ),
                 CmpOp::GtE => (
                     "Use 'x' instead of 'len(x) >= 1' for non-emptiness check",
@@ -777,8 +790,8 @@ impl Checker for BoolComparisonChecker {
             let left_src = expr_to_source(source, &c.left);
             let (msg, replacement) = match (is_eq, is_true) {
                 (true, true) => ("Redundant equality with True", left_src.clone()),
-                (true, false) => ("Use 'not x' instead of 'x == False'", format!("not {}", left_src)),
-                (false, true) => ("Use 'not x' instead of 'x != True'", format!("not {}", left_src)),
+                (true, false) => ("Use 'not x' instead of 'x == False'", not_expr(&left_src)),
+                (false, true) => ("Use 'not x' instead of 'x != True'", not_expr(&left_src)),
                 (false, false) => ("Redundant inequality with False", left_src),
             };
 
@@ -2215,7 +2228,7 @@ impl Checker for IsTrueChecker {
         let (code, message, replacement) = if is_true {
             ("RAB053".to_string(), "Use 'x' instead of 'x is True' for boolean check".to_string(), left_src.to_string())
         } else {
-            ("RAB053".to_string(), "Use 'not x' instead of 'x is False' for boolean check".to_string(), format!("not {}", left_src))
+            ("RAB053".to_string(), "Use 'not x' instead of 'x is False' for boolean check".to_string(), not_expr(left_src))
         };
         findings.push(Finding {
             line, col, end_line, end_col,
@@ -3127,7 +3140,7 @@ impl Checker for EmptyCompareChecker {
         if !left_empty && !right_empty { return; }
         let val = if left_empty { &c.comparators[0] } else { &c.left };
         let val_src = expr_to_source(source, val);
-        let replacement = if is_eq { format!("not {}", val_src) } else { val_src.clone() };
+        let replacement = if is_eq { not_expr(&val_src) } else { val_src.clone() };
         let range = c.range();
         let start = text_size_to_usize(range.start());
         let end = text_size_to_usize(range.end());
@@ -3830,30 +3843,31 @@ impl Checker for ParamTypeChecker {
 // ── RAB092: Missing class/instance attribute type annotation ─────────────
 
 pub struct AttrTypeChecker {
-    stack: Vec<bool>,
+    in_class: Vec<bool>,
+    next_is_class: bool,
 }
 
 impl AttrTypeChecker {
-    pub fn new() -> Self { Self { stack: Vec::new() } }
+    pub fn new() -> Self { Self { in_class: Vec::new(), next_is_class: false } }
 }
 
 impl Checker for AttrTypeChecker {
     fn enter_scope(&mut self) {
-        self.stack.push(false);
+        self.in_class.push(self.next_is_class);
+        self.next_is_class = false;
     }
 
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {
-        self.stack.pop();
+        self.in_class.pop();
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if matches!(stmt, Stmt::ClassDef(_)) {
-            if let Some(flag) = self.stack.last_mut() {
-                *flag = true;
-            }
+            self.next_is_class = true;
             return;
         }
-        if !self.stack.iter().any(|f| *f) { return; }
+        // Only flag if the immediate scope is a class body (not a method inside a class)
+        if !self.in_class.last().copied().unwrap_or(false) { return; }
 
         // Check simple assignments (not already annotated)
         if let Stmt::Assign(a) = stmt {
@@ -4138,8 +4152,9 @@ impl Checker for ClassNameChecker {
         let Stmt::ClassDef(c) = stmt else { return };
         let name = c.name.as_str();
         if name.chars().all(|c| c == '_') { return; }
-        let starts_upper = name.chars().next().map_or(false, |c| c.is_uppercase());
-        let has_underscore = name.contains('_');
+        let stripped = name.trim_start_matches('_');
+        let starts_upper = stripped.chars().next().map_or(false, |c| c.is_uppercase());
+        let has_underscore = stripped.contains('_');
         if starts_upper && !has_underscore { return; }
 
         let range = c.range();
@@ -4267,7 +4282,8 @@ impl Checker for UnusedImportChecker {
                 });
             }
         }
-        if let Some((parent_imports, parent_used)) = self.scope_stack.pop() {
+        if let Some((parent_imports, mut parent_used)) = self.scope_stack.pop() {
+            parent_used.extend(std::mem::take(&mut self.used));
             self.imports = parent_imports;
             self.used = parent_used;
         }
@@ -4311,6 +4327,7 @@ pub struct InconsistentReturnChecker {
     has_value_return: bool,
     has_bare_return: bool,
     func_pos: (usize, usize),
+    stack: Vec<(bool, bool)>,
 }
 
 impl InconsistentReturnChecker {
@@ -4319,12 +4336,14 @@ impl InconsistentReturnChecker {
             has_value_return: false,
             has_bare_return: false,
             func_pos: (0, 0),
+            stack: Vec::new(),
         }
     }
 }
 
 impl Checker for InconsistentReturnChecker {
     fn enter_scope(&mut self) {
+        self.stack.push((self.has_value_return, self.has_bare_return));
         self.has_value_return = false;
         self.has_bare_return = false;
     }
@@ -4338,6 +4357,10 @@ impl Checker for InconsistentReturnChecker {
                 message: "Inconsistent return statements: mix of bare 'return' and 'return <value>' in the same function".to_string(),
                 fix: None,
             });
+        }
+        if let Some((parent_value, parent_bare)) = self.stack.pop() {
+            self.has_value_return = parent_value || self.has_value_return;
+            self.has_bare_return = parent_bare || self.has_bare_return;
         }
     }
 

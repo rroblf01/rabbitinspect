@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-05-31
+
+### Fixed
+
+- **RAB001**: Variables used inside nested scopes (functions/classes) no longer falsely reported as unused
+- **RAB029/003/053/070**: Added parentheses when negating complex expressions (`not (a and b)` instead of `not a and b`)
+- **RAB092**: Assignments inside methods are no longer falsely flagged as class attributes
+- **RAB096**: Imports used inside nested scopes no longer falsely reported as unused
+- **RAB105**: Added scope stack to prevent state leaking from nested functions
+- **RAB109**: Classes with leading underscore (`_MyClass`) correctly recognized as CamelCase
+- **CI**: Removed broken `build-wheel` job; each test job now builds its own compatible wheel
+
 ## [1.0.0] - 2026-05-31
 
 ### Added
