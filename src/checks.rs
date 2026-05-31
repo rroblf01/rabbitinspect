@@ -113,6 +113,9 @@ impl Checker for UnusedVarsChecker {
             }
             Stmt::AugAssign(a) => {
                 self.collect_names_from_target(&a.target, line_starts);
+                if let Expr::Name(n) = &*a.target {
+                    self.used.push(n.id.to_string());
+                }
             }
             Stmt::For(f) => {
                 self.collect_names_from_target(&f.target, line_starts);
@@ -934,6 +937,7 @@ const COMPLEXITY_THRESHOLD: u32 = 10;
 pub struct ComplexityChecker {
     complexity: u32,
     scope_stack: Vec<u32>,
+    func_pos: Vec<(usize, usize)>,
 }
 
 impl ComplexityChecker {
@@ -941,6 +945,7 @@ impl ComplexityChecker {
         Self {
             complexity: 1,
             scope_stack: Vec::new(),
+            func_pos: Vec::new(),
         }
     }
 }
@@ -952,11 +957,9 @@ impl Checker for ComplexityChecker {
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
         if self.complexity > COMPLEXITY_THRESHOLD {
+            let (line, col) = self.func_pos.pop().unwrap_or((0, 0));
             findings.push(Finding {
-                line: 0,
-                col: 0,
-                end_line: 0,
-                end_col: 0,
+                line, col, end_line: line, end_col: col,
                 code: "RAB101".to_string(),
                 message: format!(
                     "Cyclomatic complexity is {} (threshold: {}), consider simplifying",
@@ -964,14 +967,26 @@ impl Checker for ComplexityChecker {
                 ),
                 fix: None,
             });
+        } else {
+            self.func_pos.pop();
         }
         if let Some(parent) = self.scope_stack.pop() {
             self.complexity = parent;
         }
     }
 
-    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
         match stmt {
+            Stmt::FunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
+            Stmt::AsyncFunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
             Stmt::If(i) => {
                 self.complexity += 1;
                 for elif in &i.orelse {
@@ -1145,11 +1160,12 @@ const MAX_FUNCTION_STMTS: u32 = 30;
 pub struct FunctionLengthChecker {
     count: u32,
     scope_stack: Vec<u32>,
+    func_pos: Vec<(usize, usize)>,
 }
 
 impl FunctionLengthChecker {
     pub fn new() -> Self {
-        Self { count: 0, scope_stack: Vec::new() }
+        Self { count: 0, scope_stack: Vec::new(), func_pos: Vec::new() }
     }
 }
 
@@ -1159,10 +1175,10 @@ impl Checker for FunctionLengthChecker {
     }
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
-        // Only report inside function scopes, not at module level
         if self.count > MAX_FUNCTION_STMTS && self.scope_stack.len() > 1 {
+            let (line, col) = self.func_pos.pop().unwrap_or((0, 0));
             findings.push(Finding {
-                line: 0, col: 0, end_line: 0, end_col: 0,
+                line, col, end_line: line, end_col: col,
                 code: "RAB017".to_string(),
                 message: format!(
                     "Function contains {} statements (threshold: {}), consider refactoring",
@@ -1176,9 +1192,19 @@ impl Checker for FunctionLengthChecker {
         }
     }
 
-    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
         match stmt {
-            Stmt::FunctionDef(_) | Stmt::AsyncFunctionDef(_) | Stmt::ClassDef(_) => {}
+            Stmt::FunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
+            Stmt::AsyncFunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
+            Stmt::ClassDef(_) => {}
             _ => self.count += 1,
         }
     }
@@ -1197,8 +1223,11 @@ impl Checker for TooManyParamsChecker {
         };
         let total = count_fn_args(args);
         if total > 6 {
+            let range = stmt.range();
+            let start = text_size_to_usize(range.start());
+            let (line, col) = byte_to_line_col(start, _line_starts);
             findings.push(Finding {
-                line: 0, col: 0, end_line: 0, end_col: 0,
+                line, col, end_line: line, end_col: col,
                 code: "RAB018".to_string(),
                 message: format!(
                     "Function '{}' has {} parameters (threshold: 6), consider refactoring",
@@ -1355,11 +1384,17 @@ pub struct CognitiveComplexityChecker {
     complexity: u32,
     depth: u32,
     scope_stack: Vec<(u32, u32)>,
+    func_pos: Vec<(usize, usize)>,
 }
 
 impl CognitiveComplexityChecker {
     pub fn new() -> Self {
-        Self { complexity: 1, depth: 0, scope_stack: Vec::new() }
+        Self {
+            complexity: 1,
+            depth: 0,
+            scope_stack: Vec::new(),
+            func_pos: Vec::new(),
+        }
     }
 }
 
@@ -1372,8 +1407,9 @@ impl Checker for CognitiveComplexityChecker {
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
         if self.complexity > COGNITIVE_THRESHOLD {
+            let (line, col) = self.func_pos.pop().unwrap_or((0, 0));
             findings.push(Finding {
-                line: 0, col: 0, end_line: 0, end_col: 0,
+                line, col, end_line: line, end_col: col,
                 code: "RAB102".to_string(),
                 message: format!(
                     "Cognitive complexity is {} (threshold: {}), consider simplifying",
@@ -1396,8 +1432,18 @@ impl Checker for CognitiveComplexityChecker {
         self.depth = self.depth.saturating_sub(1);
     }
 
-    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
         match stmt {
+            Stmt::FunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
+            Stmt::AsyncFunctionDef(f) => {
+                let start = text_size_to_usize(f.range().start());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                self.func_pos.push((line, col));
+            }
             Stmt::If(i) => {
                 self.complexity += 1 + self.depth;
                 for elif in &i.orelse {
@@ -1612,7 +1658,7 @@ impl Checker for ListToSetChecker {
 pub struct DataclassSlotsChecker;
 
 impl Checker for DataclassSlotsChecker {
-    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::ClassDef(cd) = stmt {
             for decorator in &cd.decorator_list {
                 let (msg, fix) = match decorator {
@@ -1630,11 +1676,28 @@ impl Checker for DataclassSlotsChecker {
                         }) {
                             (None, None)
                         } else {
+                            let call_src = source;
                             let range = c.range();
                             let start = text_size_to_usize(range.start());
                             let end = text_size_to_usize(range.end());
+                            let src_snippet = &call_src[start..end];
+                            let replacement = if let Some(pos) = src_snippet.find(')') {
+                                let before_paren = &src_snippet[..pos];
+                                if let Some(paren) = before_paren.rfind('(') {
+                                    let inner = &src_snippet[paren + 1..pos];
+                                    if inner.trim().is_empty() {
+                                        format!("dataclass(slots=True)")
+                                    } else {
+                                        format!("dataclass({}, slots=True)", inner)
+                                    }
+                                } else {
+                                    "dataclass(slots=True)".to_string()
+                                }
+                            } else {
+                                "dataclass(slots=True)".to_string()
+                            };
                             (Some("Use '@dataclass(slots=True)' to reduce memory usage and speed up attribute access".to_string()),
-                             Some(Fix { start, end, replacement: "dataclass(slots=True)".to_string() }))
+                             Some(Fix { start, end, replacement }))
                         }
                     }
                     _ => (None, None),
@@ -2357,6 +2420,14 @@ fn contains_name_ref(expr: &Expr, name: &str) -> bool {
         }
         Expr::NamedExpr(n) => contains_name_ref(&n.value, name) || contains_name_ref(&n.target, name),
         Expr::Starred(s) => contains_name_ref(&s.value, name),
+        Expr::Await(a) => contains_name_ref(&a.value, name),
+        Expr::Yield(y) => y.value.as_ref().map_or(false, |v| contains_name_ref(v, name)),
+        Expr::YieldFrom(yf) => contains_name_ref(&yf.value, name),
+        Expr::Slice(s) => {
+            s.lower.as_deref().map_or(false, |v| contains_name_ref(v, name))
+                || s.upper.as_deref().map_or(false, |v| contains_name_ref(v, name))
+                || s.step.as_deref().map_or(false, |v| contains_name_ref(v, name))
+        }
         _ => false,
     }
 }
@@ -2365,15 +2436,19 @@ pub struct UnusedLoopVarChecker;
 
 impl Checker for UnusedLoopVarChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
-        let Stmt::For(f) = stmt else { return };
-        let Expr::Name(target) = &*f.target else { return };
+        let (target_expr, body, orelse) = match stmt {
+            Stmt::For(f) => (&f.target, &f.body, &f.orelse),
+            Stmt::AsyncFor(f) => (&f.target, &f.body, &f.orelse),
+            _ => return,
+        };
+        let Expr::Name(target) = &**target_expr else { return };
         if target.id.as_str() == "_" { return; }
-        if f.body.is_empty() { return; }
-        let used = f.body.iter().any(|s| stmt_contains_name_ref(s, &target.id));
-        let used_in_orelse = f.orelse.iter().any(|s| stmt_contains_name_ref(s, &target.id));
+        if body.is_empty() { return; }
+        let used = body.iter().any(|s| stmt_contains_name_ref(s, &target.id));
+        let used_in_orelse = orelse.iter().any(|s| stmt_contains_name_ref(s, &target.id));
         if used || used_in_orelse { return; }
 
-        let range = f.target.range();
+        let range = target_expr.range();
         let start = text_size_to_usize(range.start());
         let end = text_size_to_usize(range.end());
         let (line, col) = byte_to_line_col(start, line_starts);
@@ -2438,6 +2513,34 @@ fn stmt_contains_name_ref(stmt: &Stmt, name: &str) -> bool {
         Stmt::Assert(a) => contains_name_ref(&a.test, name) || a.msg.as_ref().map_or(false, |m| contains_name_ref(m, name)),
         Stmt::Delete(d) => d.targets.iter().any(|t| contains_name_ref(t, name)),
         Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Pass(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        Stmt::Match(m) => {
+            contains_name_ref(&m.subject, name)
+                || m.cases.iter().any(|case| {
+                    case.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                })
+        }
+        Stmt::ClassDef(c) => {
+            c.bases.iter().any(|b| contains_name_ref(b, name))
+                || c.keywords.iter().any(|k| contains_name_ref(&k.value, name))
+                || c.body.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::AsyncFor(f) => {
+            contains_name_ref(&f.iter, name)
+                || f.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                || f.orelse.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::Import(i) => i.names.iter().any(|alias| {
+            let alias_name: &str = alias.asname.as_ref().unwrap_or(&alias.name);
+            alias_name == name
+        }),
+        Stmt::ImportFrom(i) => i.names.iter().any(|alias| {
+            let alias_name: &str = alias.asname.as_ref().unwrap_or(&alias.name);
+            alias_name == name
+        }),
+        Stmt::TypeAlias(t) => {
+            contains_name_ref(&t.name, name)
+                || contains_name_ref(&t.value, name)
+        }
         _ => false,
     }
 }
@@ -2609,6 +2712,7 @@ impl Checker for SortedSortChecker {
         let Expr::Call(inner) = &*attr.value else { return };
         let Expr::Name(n) = &*inner.func else { return };
         if n.id.as_str() != "sorted" || inner.args.is_empty() { return; }
+        if inner.keywords.iter().any(|k| k.arg.as_deref() == Some("reverse")) { return; }
 
         let first_arg_src = expr_to_source(source, &inner.args[0]);
         let kw_srcs: Vec<String> = inner.keywords.iter().map(|kw| {
@@ -2892,21 +2996,25 @@ impl BuiltinShadowChecker {
 }
 
 impl Checker for BuiltinShadowChecker {
-    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let targets: Option<&[Expr]> = match stmt {
             Stmt::Assign(a) => Some(&a.targets),
             Stmt::FunctionDef(f) => {
                 if let Some(builtin) = Self::check_name(f.name.as_str()) {
                     let range = stmt.range();
-                    let start = text_size_to_usize(range.start());
-                    let end = text_size_to_usize(range.end());
-                    let (line, col) = byte_to_line_col(start, line_starts);
-                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    let stmt_start = text_size_to_usize(range.start());
+                    let stmt_src = &source[stmt_start..text_size_to_usize(range.end())];
+                    let name_in_src = f.name.as_str();
+                    let name_start_in_snippet = stmt_src.find(name_in_src).unwrap_or(4);
+                    let name_start = stmt_start + name_start_in_snippet;
+                    let name_end = name_start + name_in_src.len();
+                    let (line, col) = byte_to_line_col(name_start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(name_end, line_starts);
                     findings.push(Finding {
                         line, col, end_line, end_col,
                         code: "RAB067".to_string(),
                         message: format!("Function '{}' shadows built-in '{}', rename to '{}_'", f.name, builtin, builtin),
-                        fix: Some(Fix { start, end, replacement: format!("def {}_", builtin) }),
+                        fix: Some(Fix { start: name_start, end: name_end, replacement: format!("{}_", builtin) }),
                     });
                 }
                 return;
@@ -2935,21 +3043,22 @@ impl Checker for BuiltinShadowChecker {
 // ── RAB068: raise Exception() without from inside except ──────────────
 
 pub struct RaiseWithoutFromChecker {
-    in_except: bool,
+    except_depth: usize,
 }
 
 impl RaiseWithoutFromChecker {
     pub fn new() -> Self {
-        Self { in_except: false }
+        Self { except_depth: 0 }
     }
 }
 
 impl Checker for RaiseWithoutFromChecker {
-    fn enter_except(&mut self) { self.in_except = true; }
-    fn exit_except(&mut self) { self.in_except = false; }
+    fn enter_scope(&mut self) { self.except_depth = 0; }
+    fn enter_except(&mut self) { self.except_depth += 1; }
+    fn exit_except(&mut self) { self.except_depth = self.except_depth.saturating_sub(1); }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
-        if !self.in_except { return; }
+        if self.except_depth == 0 { return; }
         let Stmt::Raise(r) = stmt else { return };
         if r.cause.is_some() { return; }
         if r.exc.is_none() { return; }
@@ -2963,6 +3072,492 @@ impl Checker for RaiseWithoutFromChecker {
             code: "RAB068".to_string(),
             message: "Raise inside 'except' without 'from' may lose original traceback".to_string(),
             fix: None,
+        });
+    }
+}
+
+// ── RAB069: dict() / list() / tuple() → literal syntax ──────────────
+
+pub struct EmptyCollectionChecker;
+
+impl Checker for EmptyCollectionChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        if !c.args.is_empty() || !c.keywords.is_empty() { return; }
+        let (replacement, name) = match &*c.func {
+            Expr::Name(n) if n.id.as_str() == "dict" => ("{}", "dict"),
+            Expr::Name(n) if n.id.as_str() == "list" => ("[]", "list"),
+            Expr::Name(n) if n.id.as_str() == "tuple" => ("()", "tuple"),
+            _ => return,
+        };
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB069".to_string(),
+            message: format!("Use '{}' instead of '{}()' for empty collection", replacement, name),
+            fix: Some(Fix { start, end, replacement: replacement.to_string() }),
+        });
+    }
+}
+
+// ── RAB070: x == "" / x == [] / x == {} → not x / x ────────────────
+
+pub struct EmptyCompareChecker;
+
+impl Checker for EmptyCompareChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Compare(c) = expr else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        let (is_eq, is_ne) = match c.ops[0] {
+            CmpOp::Eq => (true, false),
+            CmpOp::NotEq => (false, true),
+            _ => return,
+        };
+        let is_empty = |e: &Expr| -> bool {
+            matches!(e, Expr::Constant(cc) if matches!(&cc.value, Constant::Str(s) if s.is_empty()))
+                || matches!(e, Expr::List(l) if l.elts.is_empty())
+                || matches!(e, Expr::Dict(d) if d.keys.iter().flatten().count() == 0)
+        };
+        let left_empty = is_empty(&c.left);
+        let right_empty = is_empty(&c.comparators[0]);
+        if !left_empty && !right_empty { return; }
+        let val = if left_empty { &c.comparators[0] } else { &c.left };
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let val_src = expr_to_source(source, val);
+        let replacement = if is_eq { format!("not {}", val_src) } else { val_src.clone() };
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB070".to_string(),
+            message: format!("Use 'not {}' instead of equality with empty literal", val_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB071: list comp inside str.join() → generator ─────────────────
+
+pub struct JoinListCompChecker;
+
+impl Checker for JoinListCompChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        if a.attr.as_str() != "join" || c.args.len() != 1 { return; }
+        let Expr::ListComp(lc) = &c.args[0] else { return };
+        let lc_range = lc.range();
+        let start = text_size_to_usize(lc_range.start());
+        let end = text_size_to_usize(lc_range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let inner = &source[start + 1..end - 1];
+        let replacement = format!("({})", inner);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB071".to_string(),
+            message: "Use a generator expression instead of a list comprehension inside 'str.join()'".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB072: except Exception: raise (dead handler) ──────────────────
+
+pub struct DeadExceptChecker;
+
+impl Checker for DeadExceptChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Try(t) = stmt else { return };
+        for handler in &t.handlers {
+            let ExceptHandler::ExceptHandler(h) = handler;
+            if h.body.len() != 1 { continue; }
+            let Stmt::Raise(r) = &h.body[0] else { continue };
+            if r.exc.is_some() { continue; }
+            let range = h.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB072".to_string(),
+                message: "Except handler only re-raises, it can be removed".to_string(),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB073: old-style % string formatting ────────────────────────────
+
+pub struct PercentFormatChecker;
+
+impl Checker for PercentFormatChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::BinOp(b) = expr else { return };
+        if !matches!(b.op, Operator::Mod) { return; }
+        let Expr::Constant(cc) = &*b.left else { return };
+        if !matches!(&cc.value, Constant::Str(_)) { return; }
+        let range = b.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB073".to_string(),
+            message: "Use an f-string instead of old-style '%' string formatting".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB074: os.path.* → pathlib.Path ─────────────────────────────────
+
+pub struct OsPathChecker;
+
+impl Checker for OsPathChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(outer_attr) = &*c.func else { return };
+        let Expr::Attribute(inner_attr) = &*outer_attr.value else { return };
+        let Expr::Name(n) = &*inner_attr.value else { return };
+        if n.id.as_str() != "os" || inner_attr.attr.as_str() != "path" { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB074".to_string(),
+            message: format!("Use 'pathlib.Path' instead of 'os.path.{}()'", outer_attr.attr),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB075: isinstance(x, (A,)) → isinstance(x, A) ──────────────────
+
+pub struct SingleTypeIsinstanceChecker;
+
+impl Checker for SingleTypeIsinstanceChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        if n.id.as_str() != "isinstance" && n.id.as_str() != "issubclass" { return; }
+        if c.args.len() != 2 { return; }
+        let Expr::Tuple(t) = &c.args[1] else { return };
+        if t.elts.len() != 1 { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let obj_src = expr_to_source(source, &c.args[0]);
+        let type_src = expr_to_source(source, &t.elts[0]);
+        let replacement = format!("{}({}, {})", n.id, obj_src, type_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB075".to_string(),
+            message: format!("Use '{}({}, {})' instead of wrapping a single type in a tuple", n.id, obj_src, type_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB076: str() on string expression ───────────────────────────────
+
+pub struct RedundantStrChecker;
+
+impl Checker for RedundantStrChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        if n.id.as_str() != "str" || c.args.len() != 1 { return; }
+        let is_already_str = match &c.args[0] {
+            Expr::Constant(cc) => matches!(&cc.value, Constant::Str(_)),
+            Expr::Call(inner) => {
+                matches!(&*inner.func, Expr::Attribute(a) if a.attr.as_str() == "join")
+                    || matches!(&*inner.func, Expr::Name(fn_name) if matches!(fn_name.id.as_str(), "str" | "repr" | "ascii"))
+            }
+            _ => false,
+        };
+        if !is_already_str { return; }
+        let inner_src = expr_to_source(source, &c.args[0]);
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB076".to_string(),
+            message: format!("Redundant 'str()' call on value that is already a string, use '{}' directly", inner_src),
+            fix: Some(Fix { start, end, replacement: inner_src }),
+        });
+    }
+}
+
+// ── RAB078: except Exception: pass ────────────────────────────────────
+
+pub struct ExceptPassChecker;
+
+impl Checker for ExceptPassChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Try(t) = stmt else { return };
+        for handler in &t.handlers {
+            let ExceptHandler::ExceptHandler(h) = handler;
+            if h.body.len() != 1 { continue; }
+            let Stmt::Pass(_) = &h.body[0] else { continue };
+            let range = h.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB078".to_string(),
+                message: "Except handler only contains 'pass', exception is silently swallowed".to_string(),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB079: __del__ method defined ────────────────────────────────────
+
+pub struct DelMethodChecker;
+
+impl Checker for DelMethodChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::FunctionDef(f) = stmt else { return };
+        if f.name.as_str() != "__del__" { return; }
+        let range = f.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB079".to_string(),
+            message: "__del__ method defined, use a context manager or explicit cleanup instead".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB080: list(d.keys()) / list(d.values()) / list(d.items()) → list(d) ─
+
+pub struct ListKeysChecker;
+
+impl Checker for ListKeysChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        if n.id.as_str() != "list" || c.args.len() != 1 { return; }
+        let Expr::Call(inner) = &c.args[0] else { return };
+        let Expr::Attribute(a) = &*inner.func else { return };
+        if inner.args.len() != 0 || inner.keywords.len() != 0 { return; }
+        if a.attr.as_str() != "keys" && a.attr.as_str() != "values" && a.attr.as_str() != "items" { return; }
+        let obj_src = expr_to_source(source, &a.value);
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("list({})", obj_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB080".to_string(),
+            message: format!("Use 'list({})' instead of 'list(d.{})'", obj_src, a.attr),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB083: Nested ternary (ternary inside ternary) ───────────────────
+
+pub struct NestedTernaryChecker;
+
+impl Checker for NestedTernaryChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::IfExp(ifexp) = expr else { return };
+        let has_nested = matches!(&*ifexp.body, Expr::IfExp(_))
+            || matches!(&*ifexp.orelse, Expr::IfExp(_));
+        if !has_nested { return; }
+        let range = ifexp.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB083".to_string(),
+            message: "Nested ternary expression harms readability, use if/elif/else instead".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB085: reversed(sorted(x)) → sorted(x, reverse=True) ────────────
+
+pub struct ReversedSortedChecker;
+
+impl Checker for ReversedSortedChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(outer) = expr else { return };
+        let Expr::Name(outer_n) = &*outer.func else { return };
+        if outer_n.id.as_str() != "reversed" || outer.args.len() != 1 { return; }
+        let Expr::Call(inner) = &outer.args[0] else { return };
+        let Expr::Name(inner_n) = &*inner.func else { return };
+        if inner_n.id.as_str() != "sorted" { return; }
+        if inner.keywords.iter().any(|k| k.arg.as_deref() == Some("reverse")) { return; }
+
+        let first_arg_src = expr_to_source(source, &inner.args[0]);
+        let kw_srcs: Vec<String> = inner.keywords.iter().map(|kw| {
+            let arg_name = kw.arg.as_deref().unwrap_or("");
+            let val_src = expr_to_source(source, &kw.value);
+            format!("{}={}", arg_name, val_src)
+        }).collect();
+        let all_kw = if kw_srcs.is_empty() {
+            "reverse=True".to_string()
+        } else {
+            format!("{}, reverse=True", kw_srcs.join(", "))
+        };
+        let range = outer.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("sorted({}, {})", first_arg_src, all_kw);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB085".to_string(),
+            message: "Use 'sorted(x, reverse=True)' instead of 'reversed(sorted(x))'".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB087: dict comp over zip → dict(zip(...)) ──────────────────────
+
+pub struct DictZipChecker;
+
+impl Checker for DictZipChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::DictComp(dc) = expr else { return };
+        if dc.generators.len() != 1 { return; }
+        let comp = &dc.generators[0];
+        if !comp.ifs.is_empty() { return; }
+        // Check iter is zip(...)
+        let Expr::Call(zip_call) = &comp.iter else { return };
+        let Expr::Name(zip_name) = &*zip_call.func else { return };
+        if zip_name.id.as_str() != "zip" { return; }
+        // Check target is tuple of two names matching key/value
+        let Expr::Tuple(tup) = &comp.target else { return };
+        if tup.elts.len() != 2 { return; }
+        let Expr::Name(k_name) = &tup.elts[0] else { return };
+        let Expr::Name(v_name) = &tup.elts[1] else { return };
+        let Expr::Name(dk) = &*dc.key else { return };
+        let Expr::Name(dv) = &*dc.value else { return };
+        if dk.id != k_name.id || dv.id != v_name.id { return; }
+
+        let zip_src = expr_to_source(source, &comp.iter);
+        let range = dc.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("dict({})", zip_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB087".to_string(),
+            message: "Use 'dict(zip(...))' instead of a dict comprehension".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB088: while len(x) > 0 → while x ───────────────────────────────
+
+pub struct WhileLenChecker;
+
+impl Checker for WhileLenChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::While(ww) = stmt else { return };
+        let Expr::Compare(c) = &*ww.test else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        let is_positive = match c.ops[0] {
+            CmpOp::Gt | CmpOp::NotEq => true,
+            _ => return,
+        };
+        let left = &*c.left;
+        let right = &c.comparators[0];
+        let (val, is_zero) = if is_literal_zero(left) { (right, false) }
+            else if is_literal_zero(right) { (left, true) }
+            else { return };
+        let Expr::Call(len_call) = val else { return };
+        let Expr::Name(len_name) = &*len_call.func else { return };
+        if len_name.id.as_str() != "len" || len_call.args.len() != 1 { return; }
+
+        let iter_src = expr_to_source(source, &len_call.args[0]);
+        let test_range = ww.test.range();
+        let start = text_size_to_usize(test_range.start());
+        let end = text_size_to_usize(test_range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = iter_src.clone();
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB088".to_string(),
+            message: format!("Use 'while {}:' instead of 'while len({}) > 0:'", iter_src, iter_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+fn is_literal_zero(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(c) if matches!(&c.value, Constant::Int(i) if *i == rustpython_ast::bigint::BigInt::from(0u64)))
+}
+
+// ── RAB089: copy.copy(x) → x.copy() ──────────────────────────────────
+
+pub struct CopyCopyChecker;
+
+impl Checker for CopyCopyChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        if a.attr.as_str() != "copy" { return; }
+        let Expr::Name(n) = &*a.value else { return };
+        if n.id.as_str() != "copy" || c.args.len() != 1 { return; }
+        let is_literal = matches!(&c.args[0], Expr::List(_) | Expr::Dict(_));
+        if !is_literal { return; }
+        let arg_src = expr_to_source(source, &c.args[0]);
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{}.copy()", arg_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB089".to_string(),
+            message: format!("Use '{}.copy()' instead of 'copy.copy({})'", arg_src, arg_src),
+            fix: Some(Fix { start, end, replacement }),
         });
     }
 }

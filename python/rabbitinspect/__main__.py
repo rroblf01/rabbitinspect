@@ -4,7 +4,10 @@ import os
 import re
 import sys
 import pathlib
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python 3.10 fallback
 
 from rabbitinspect import analyze_code, apply_fixes
 

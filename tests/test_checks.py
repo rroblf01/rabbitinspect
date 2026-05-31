@@ -526,10 +526,10 @@ class TestRAB012BareExcept:
         check_code("try:\n    pass\nexcept:\n    pass", {"RAB012"})
 
     def test_no_warning_typed_except(self):
-        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass")
+        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass", ignore_codes={"RAB001", "RAB078"})
 
     def test_no_warning_except_as(self):
-        assert_no_findings("try:\n    pass\nexcept Exception as e:\n    pass")
+        assert_no_findings("try:\n    pass\nexcept Exception as e:\n    pass", ignore_codes={"RAB001", "RAB078"})
 
 
 class TestRAB013BareExceptPass:
@@ -537,7 +537,7 @@ class TestRAB013BareExceptPass:
         check_code("try:\n    pass\nexcept:\n    pass", {"RAB013"})
 
     def test_no_warning_except_with_action(self):
-        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass")
+        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass", ignore_codes={"RAB001", "RAB078"})
 
 
 class TestRAB014ClassObject:

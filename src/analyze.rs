@@ -14,6 +14,9 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB053",
     "RAB054", "RAB055", "RAB056", "RAB057", "RAB058", "RAB059", "RAB060",
     "RAB061", "RAB062", "RAB063", "RAB064", "RAB065", "RAB066", "RAB067", "RAB068",
+    "RAB069", "RAB070", "RAB071", "RAB072", "RAB073", "RAB074", "RAB075",
+    "RAB076", "RAB077", "RAB078", "RAB079", "RAB080", "RAB081", "RAB082",
+    "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088", "RAB089",
     "RAB101", "RAB102",
 ];
 
@@ -159,6 +162,22 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut return_ternary = crate::checks::ReturnTernaryChecker;
     let mut inf_while = crate::checks::InfiniteWhileChecker;
     let mut sorted_sort = crate::checks::SortedSortChecker;
+    let mut empty_coll = crate::checks::EmptyCollectionChecker;
+    let mut empty_cmp = crate::checks::EmptyCompareChecker;
+    let mut join_lc = crate::checks::JoinListCompChecker;
+    let mut dead_except = crate::checks::DeadExceptChecker;
+    let mut percent_fmt = crate::checks::PercentFormatChecker;
+    let mut os_path = crate::checks::OsPathChecker;
+    let mut single_isinstance = crate::checks::SingleTypeIsinstanceChecker;
+    let mut redundant_str = crate::checks::RedundantStrChecker;
+    let mut except_pass = crate::checks::ExceptPassChecker;
+    let mut del_method = crate::checks::DelMethodChecker;
+    let mut list_keys = crate::checks::ListKeysChecker;
+    let mut nested_ternary = crate::checks::NestedTernaryChecker;
+    let mut reversed_sorted = crate::checks::ReversedSortedChecker;
+    let mut dict_zip = crate::checks::DictZipChecker;
+    let mut while_len = crate::checks::WhileLenChecker;
+    let mut copy_copy = crate::checks::CopyCopyChecker;
     let mut wildcard_import = crate::checks::WildcardImportChecker;
     let mut redundant_pass = crate::checks::RedundantPassChecker;
     let mut is_literal = crate::checks::IsLiteralChecker;
@@ -227,6 +246,22 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut return_ternary,
         &mut inf_while,
         &mut sorted_sort,
+        &mut empty_coll,
+        &mut empty_cmp,
+        &mut join_lc,
+        &mut dead_except,
+        &mut percent_fmt,
+        &mut os_path,
+        &mut single_isinstance,
+        &mut redundant_str,
+        &mut except_pass,
+        &mut del_method,
+        &mut list_keys,
+        &mut nested_ternary,
+        &mut reversed_sorted,
+        &mut dict_zip,
+        &mut while_len,
+        &mut copy_copy,
         &mut wildcard_import,
         &mut redundant_pass,
         &mut is_literal,
