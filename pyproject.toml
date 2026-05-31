@@ -19,6 +19,25 @@ dependencies = [
 [project.scripts]
 rabbitinspect = "rabbitinspect.__main__:main"
 
+[project.urls]
+Homepage = "https://github.com/ricardorobles/rabbitinspect"
+Repository = "https://github.com/ricardorobles/rabbitinspect"
+Changelog = "https://github.com/ricardorobles/rabbitinspect/blob/main/CHANGELOG.md"
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
 [tool.maturin]
 module-name = "rabbitinspect._core"
 python-source = "python"

@@ -20,17 +20,12 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install uv
         run: pip install uv
-      - uses: actions/cache@v5
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
-          restore-keys: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
-      - name: Install dependencies
-        run: uv sync --frozen
+      - name: Install linters
+        run: uv pip install ruff ty tomli --system
       - name: Run ruff
-        run: uv run ruff check python/ tests/ --ignore=E501
+        run: ruff check python/ tests/ --ignore=E501
       - name: Run ty
-        run: uv run ty check python/rabbitinspect/ --python-version 3.14
+        run: ty check python/rabbitinspect/ --python-version 3.14
 
   rust:
     runs-on: ubuntu-latest
