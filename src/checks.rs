@@ -3769,6 +3769,225 @@ impl Checker for UnnecessaryPassChecker {
     }
 }
 
+// ── RAB090: Missing parameter type annotation (public functions) ──────────
+// ── RAB091: Missing return type annotation (all functions) ────────────────
+
+pub struct ParamTypeChecker {
+    scope_func_name: Option<String>,
+}
+
+impl ParamTypeChecker {
+    pub fn new() -> Self { Self { scope_func_name: None } }
+}
+
+impl Checker for ParamTypeChecker {
+    fn enter_scope(&mut self) { self.scope_func_name = None; }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let (name, args, returns) = match stmt {
+            Stmt::FunctionDef(f) => (f.name.as_str(), &f.args, &f.returns),
+            Stmt::AsyncFunctionDef(f) => (f.name.as_str(), &f.args, &f.returns),
+            _ => return,
+        };
+        let is_public = !name.starts_with('_');
+
+        // RAB090: Missing parameter type annotations (public functions only)
+        if is_public {
+            for arg in iter_fn_args(args) {
+                if arg.def.annotation.is_none() {
+                    let range = arg.def.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB090".to_string(),
+                        message: format!("Parameter '{}' of public function '{}' is missing type annotation", arg.def.arg, name),
+                        fix: None,
+                    });
+                }
+            }
+        }
+
+        // RAB091: Missing return type annotation (all functions)
+        if returns.is_none() {
+            let range = stmt.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB091".to_string(),
+                message: format!("Function '{}' is missing a return type annotation", name),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB092: Missing class/instance attribute type annotation ─────────────
+
+pub struct AttrTypeChecker {
+    stack: Vec<bool>,
+}
+
+impl AttrTypeChecker {
+    pub fn new() -> Self { Self { stack: Vec::new() } }
+}
+
+impl Checker for AttrTypeChecker {
+    fn enter_scope(&mut self) {
+        self.stack.push(false);
+    }
+
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {
+        self.stack.pop();
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if matches!(stmt, Stmt::ClassDef(_)) {
+            if let Some(flag) = self.stack.last_mut() {
+                *flag = true;
+            }
+            return;
+        }
+        if !self.stack.iter().any(|f| *f) { return; }
+
+        // Check simple assignments (not already annotated)
+        if let Stmt::Assign(a) = stmt {
+            if a.targets.len() == 1 {
+                if let Expr::Name(n) = &a.targets[0] {
+                    if !n.id.as_str().starts_with('_') {
+                        let range = n.range();
+                        let start = text_size_to_usize(range.start());
+                        let end = text_size_to_usize(range.end());
+                        let (line, col) = byte_to_line_col(start, line_starts);
+                        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                        findings.push(Finding {
+                            line, col, end_line, end_col,
+                            code: "RAB092".to_string(),
+                            message: format!("Class attribute '{}' is missing type annotation", n.id),
+                            fix: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── RAB093: Missing module-level variable type annotation ─────────────────
+
+pub struct ModuleVarTypeChecker;
+
+impl Checker for ModuleVarTypeChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Assign(a) = stmt else { return };
+        if a.targets.len() != 1 { return; }
+        let Expr::Name(n) = &a.targets[0] else { return };
+        if n.id.as_str().starts_with('_') { return; }
+
+        let range = n.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB093".to_string(),
+            message: format!("Module-level variable '{}' is missing type annotation", n.id),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB094: Any annotation detected ─────────────────────────────────────
+
+pub struct AnyAnnotationChecker;
+
+impl Checker for AnyAnnotationChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Subscript(s) = expr {
+            if let Expr::Name(n) = &*s.value {
+                if n.id.as_str() == "Any" {
+                    let range = n.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB094".to_string(),
+                        message: "Use of 'Any' type annotation, prefer a more specific type".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+        if let Expr::Name(n) = expr {
+            if n.id.as_str() == "Any" {
+                let range = n.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB094".to_string(),
+                    message: "Use of 'Any' type annotation, prefer a more specific type".to_string(),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
+// ── RAB095: Type annotation vs default value mismatch ─────────────────────
+
+pub struct TypeDefaultMismatchChecker;
+
+impl Checker for TypeDefaultMismatchChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let args = match stmt {
+            Stmt::FunctionDef(f) => &f.args,
+            Stmt::AsyncFunctionDef(f) => &f.args,
+            _ => return,
+        };
+        for arg in iter_fn_args(args) {
+            let Some(annotation) = &arg.def.annotation else { continue };
+            let Some(default) = &arg.default else { continue };
+            let is_none_default = matches!(&**default, Expr::Constant(cc) if matches!(&cc.value, Constant::None));
+            let is_mutable_default = matches!(&**default, Expr::List(_) | Expr::Dict(_) | Expr::Set(_));
+            if !is_none_default && !is_mutable_default { continue; }
+
+            let annotation_is_concrete = |e: &Expr| -> bool {
+                match e {
+                    Expr::Name(n) => !matches!(n.id.as_str(), "Any" | "Optional"),
+                    Expr::Subscript(s) => matches!(&*s.value, Expr::Name(n) if !matches!(n.id.as_str(), "Optional" | "Union")),
+                    _ => true,
+                }
+            };
+
+            if !annotation_is_concrete(annotation) { continue; }
+            let range = default.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            let default_src = &source[start..end];
+            let ann_src = &source[text_size_to_usize(annotation.range().start())..text_size_to_usize(annotation.range().end())];
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB095".to_string(),
+                message: format!("Default value '{}' may be incompatible with type annotation '{}'", default_src, ann_src),
+                fix: None,
+            });
+        }
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {

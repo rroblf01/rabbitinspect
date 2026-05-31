@@ -173,6 +173,12 @@ fixed = apply_fixes(source, fixes)
 | **RAB087** | `{k: v for k, v in zip(...)}` → `dict(zip(...))` | ✅ |
 | **RAB088** | `while len(x) > 0` → `while x` | ✅ |
 | **RAB089** | `copy.copy(x)` → `x.copy()` | ✅ |
+| **RAB090** | Public function parameter missing type annotation | ❌ |
+| **RAB091** | Function missing return type annotation | ❌ |
+| **RAB092** | Class attribute missing type annotation | ❌ |
+| **RAB093** | Module-level variable missing type annotation | ❌ |
+| **RAB094** | `Any` type annotation used, prefer concrete type | ❌ |
+| **RAB095** | Default value incompatible with type annotation | ❌ |
 | **RAB097** | Debugging `print()` / `breakpoint()` / `pdb.set_trace()` left in code | ❌ |
 | **RAB098** | Import inside function/class body, move to module level | ❌ |
 | **RAB099** | Duplicate key/element in dict/set literal | ❌ |

@@ -16,7 +16,8 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB061", "RAB062", "RAB063", "RAB064", "RAB065", "RAB066", "RAB067", "RAB068",
     "RAB069", "RAB070", "RAB071", "RAB072", "RAB073", "RAB074", "RAB075",
     "RAB076", "RAB077", "RAB078", "RAB079", "RAB080", "RAB081", "RAB082",
-    "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088", "RAB089",
+    "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088",     "RAB089",
+    "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
     "RAB097", "RAB098", "RAB099",
     "RAB101", "RAB102",
     "RAB106",
@@ -196,6 +197,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut re_compile = crate::checks::ReCompileChecker::new();
     let mut readlines = crate::checks::ReadlinesChecker;
     let mut type_union = crate::checks::TypeUnionChecker;
+    let mut param_type = crate::checks::ParamTypeChecker::new();
+    let mut attr_type = crate::checks::AttrTypeChecker::new();
+    let mut module_var_type = crate::checks::ModuleVarTypeChecker;
+    let mut any_annotation = crate::checks::AnyAnnotationChecker;
+    let mut type_default = crate::checks::TypeDefaultMismatchChecker;
     let mut debug_leftover = crate::checks::DebugLeftoverChecker;
     let mut import_in_func = crate::checks::ImportInFunctionChecker::new();
     let mut duplicate_key = crate::checks::DuplicateKeyChecker;
@@ -285,6 +291,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut re_compile,
         &mut readlines,
         &mut type_union,
+        &mut param_type,
+        &mut attr_type,
+        &mut module_var_type,
+        &mut any_annotation,
+        &mut type_default,
         &mut debug_leftover,
         &mut import_in_func,
         &mut duplicate_key,

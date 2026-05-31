@@ -468,3 +468,22 @@ def bad_broad_except():
 def bad_unnecessary_pass():
     x = 1
     pass
+
+
+def bad_missing_param_type(x):
+    pass
+
+
+def bad_class_attr_type():
+    class Foo:
+        x = 1
+
+
+x_type = 1
+
+
+y_any: Any = None
+
+
+def bad_type_default(x: str = None):
+    pass

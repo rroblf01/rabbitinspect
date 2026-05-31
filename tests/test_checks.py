@@ -10,7 +10,8 @@ def check_code(source, expected_codes):
 
 
 def assert_no_findings(source, ignore_codes=None):
-    default_ignore = {"RAB001", "RAB097", "RAB098", "RAB099", "RAB106", "RAB112"}
+    default_ignore = {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
+                       "RAB097", "RAB098", "RAB099", "RAB106", "RAB112"}
     if ignore_codes is not None:
         ignore_codes = default_ignore | ignore_codes
     else:
@@ -779,6 +780,98 @@ class TestRAB106BroadExcept:
         assert_no_findings("try:\n    pass\nexcept (ValueError, TypeError):\n    pass", ignore_codes={"RAB001", "RAB078"})
 
 
+class TestRAB090MissingParamType:
+    def test_missing_param_type(self):
+        check_code("def foo(x): pass", {"RAB090"})
+
+    def test_missing_param_type_multiple(self):
+        check_code("def foo(x, y): pass", {"RAB090"})
+
+    def test_no_warning_with_annotation(self):
+        assert_no_findings("def foo(x: int) -> None: pass", ignore_codes={"RAB001"})
+
+    def test_no_warning_private_func(self):
+        assert_no_findings("def _internal(x) -> None: pass")
+
+    def test_async_func(self):
+        check_code("async def fetch(url): pass", {"RAB090"})
+
+    def test_missing_some_params(self):
+        findings = check_code("def foo(a: int, b): pass", {"RAB090"})
+        codes = {f["code"] for f in findings}
+        assert "RAB090" in codes
+
+
+class TestRAB091MissingReturnType:
+    def test_missing_return_type(self):
+        check_code("def foo(): pass", {"RAB091"})
+
+    def test_missing_return_type_private(self):
+        check_code("def _internal(): pass", {"RAB091"})
+
+    def test_no_warning_with_return(self):
+        assert_no_findings("def foo() -> None: pass", ignore_codes={"RAB001"})
+
+    def test_async_func(self):
+        check_code("async def fetch(): return None", {"RAB091"})
+
+
+class TestRAB092MissingAttrType:
+    def test_missing_attr_type(self):
+        check_code("class Foo:\n    x = 1", {"RAB092"})
+
+    def test_no_warning_annotated(self):
+        assert_no_findings("class Foo:\n    x: int = 1", ignore_codes={"RAB001"})
+
+    def test_no_warning_private_attr(self):
+        assert_no_findings("class Foo:\n    _x = 1")
+
+    def test_no_warning_outside_class(self):
+        assert_no_findings("x = 1", ignore_codes={"RAB093"})
+
+
+class TestRAB093MissingModuleVarType:
+    def test_missing_module_var_type(self):
+        check_code("x = 1", {"RAB093"})
+
+    def test_no_warning_annotated(self):
+        assert_no_findings("x: int = 1", ignore_codes={"RAB001"})
+
+    def test_no_warning_private_var(self):
+        assert_no_findings("_x = 1")
+
+
+class TestRAB094AnyAnnotation:
+    def test_any_type(self):
+        check_code("x: Any = 1", {"RAB094"})
+
+    def test_any_in_generic(self):
+        check_code("x: list[Any] = []", {"RAB094"})
+
+    def test_no_warning_concrete_type(self):
+        assert_no_findings("x: int = 1", ignore_codes={"RAB001"})
+
+    def test_no_warning_no_any(self):
+        assert_no_findings("def foo(x: str) -> None: pass", ignore_codes={"RAB001"})
+
+
+class TestRAB095TypeDefaultMismatch:
+    def test_none_default_with_concrete_type(self):
+        check_code("def foo(x: str = None): pass", {"RAB095"})
+
+    def test_mutable_default_with_type(self):
+        check_code("def foo(x: list = []): pass", {"RAB095"})
+
+    def test_no_warning_optional_type(self):
+        assert_no_findings("def foo(x: Optional[int] = None) -> None: pass", ignore_codes={"RAB001", "RAB022", "RAB044", "RAB090"})
+
+    def test_no_warning_correct_default(self):
+        assert_no_findings("def foo(x: int = 0) -> None: pass", ignore_codes={"RAB001"})
+
+    def test_no_warning_any_default(self):
+        assert_no_findings("def foo(x: Any = None) -> None: pass", ignore_codes={"RAB001", "RAB022", "RAB090"})
+
+
 class TestRAB112UnnecessaryPass:
     def test_pass_after_code(self):
         findings = check_code("def foo():\n    x = 1\n    pass", {"RAB112"})
@@ -814,6 +907,7 @@ class TestEndToEndAll:
                      "RAB034", "RAB035", "RAB036", "RAB037", "RAB038",
                      "RAB039", "RAB040", "RAB041", "RAB042",
                      "RAB043", "RAB044", "RAB045",
+                     "RAB090", "RAB091", "RAB092", "RAB093",
                      "RAB097", "RAB098", "RAB099",
                      "RAB101", "RAB102",
                      "RAB106",
@@ -837,7 +931,8 @@ class TestEndToEndAll:
                              "RAB098", "RAB099",
                              "RAB101", "RAB102"}
         for code in forbidden_in_good:
-            if code in {"RAB001", "RAB097", "RAB098", "RAB101", "RAB102", "RAB106", "RAB112"}:
+            if code in {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
+                         "RAB097", "RAB098", "RAB101", "RAB102", "RAB106", "RAB112"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
 

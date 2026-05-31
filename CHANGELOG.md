@@ -70,6 +70,12 @@ All notable changes to this project will be documented in this file.
 | RAB099 | Duplicate key/element in dict/set literal | ❌ |
 | RAB106 | Too broad `except Exception:` catch | ❌ |
 | RAB112 | Unnecessary `pass` in non-empty body | ✅ |
+| RAB090 | Public function parameter missing type annotation | ❌ |
+| RAB091 | Function missing return type annotation | ❌ |
+| RAB092 | Class attribute missing type annotation | ❌ |
+| RAB093 | Module-level variable missing type annotation | ❌ |
+| RAB094 | `Any` type annotation used, prefer concrete type | ❌ |
+| RAB095 | Default value incompatible with type annotation | ❌ |
 
 - Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
 - Rust+PyO3 analysis engine
