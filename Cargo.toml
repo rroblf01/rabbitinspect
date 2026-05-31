@@ -1,0 +1,18 @@
+[package]
+name = "rabbitinspect"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rabbitinspect"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+rustpython-parser = "0.4"
+rustpython-ast = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

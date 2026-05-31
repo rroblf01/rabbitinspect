@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rabbitinspect"
+version = "0.1.0"
+description = "Python code performance analyzer written in Rust — detects unused variables, None comparisons, list vs generator, and more"
+readme = "README.md"
+authors = [
+    { name = "Ricardo Robles", email = "ricardo.r.f@hotmail.com" }
+]
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+rabbitinspect = "rabbitinspect.__main__:main"
+
+[tool.maturin]
+module-name = "rabbitinspect._core"
+python-source = "python"
