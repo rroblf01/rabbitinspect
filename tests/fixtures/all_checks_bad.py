@@ -355,3 +355,91 @@ def bad_is_false(x):
     if x is False:
         return 1
     return 0
+
+
+def bad_range_len(items):
+    result = []
+    for i in range(len(items)):
+        result.append(items[i])
+    return result
+
+
+def bad_setdefault(d, k, v):
+    d.setdefault(k, []).append(v)
+
+
+def bad_type_or(x):
+    return type(x) == int or type(x) == str
+
+
+def bad_if_not_assign(x):
+    if not x:
+        x = 42
+    return x
+
+
+def bad_unused_loop_var():
+    for _unused in range(10):
+        print("hello")
+
+
+def bad_nested_with():
+    with open("/dev/null") as f:
+        with open("/dev/zero") as g:
+            print(f, g)
+
+
+def bad_startswith_or(s):
+    return s.startswith("a") or s.startswith("b")
+
+
+def bad_return_ternary(x):
+    return True if x > 0 else False
+
+
+def bad_while_true():
+    while True:
+        print("infinite")
+
+
+def bad_sorted_sort(items):
+    return sorted(items).sort()
+
+
+from os import *
+
+
+def bad_redundant_pass():
+    """docstring"""
+    pass
+
+
+def bad_is_literal(x):
+    return x is 5
+
+
+class BadInitReturn:
+    def __init__(self):
+        return 42
+
+
+def bad_dead_code():
+    if True:
+        print("always")
+
+
+def bad_def_in_loop():
+    items = [1, 2, 3]
+    for x in items:
+        def inner():
+            return x
+
+
+list = [1, 2, 3]
+
+
+def bad_raise_without_from():
+    try:
+        pass
+    except:
+        raise ValueError("no from")

@@ -10,7 +10,10 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB034", "RAB035", "RAB036", "RAB037", "RAB038", "RAB039",
     "RAB040", "RAB041", "RAB042", "RAB043", "RAB044", "RAB045",
     "RAB046", "RAB047", "RAB048", "RAB049",
+    "RAB050", "RAB051", "RAB052",
     "RAB053",
+    "RAB054", "RAB055", "RAB056", "RAB057", "RAB058", "RAB059", "RAB060",
+    "RAB061", "RAB062", "RAB063", "RAB064", "RAB065", "RAB066", "RAB067", "RAB068",
     "RAB101", "RAB102",
 ];
 
@@ -77,6 +80,8 @@ pub trait Checker {
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {}
     fn enter_block(&mut self) {}
     fn exit_block(&mut self) {}
+    fn enter_except(&mut self) {}
+    fn exit_except(&mut self) {}
     fn visit_stmt(
         &mut self,
         _stmt: &Stmt,
@@ -144,6 +149,24 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut not_is_none = crate::checks::NotIsNoneChecker;
     let mut aug_assign = crate::checks::AugmentedAssignChecker;
     let mut is_true = crate::checks::IsTrueChecker;
+    let mut range_len = crate::checks::RangeLenChecker;
+    let mut setdefault = crate::checks::SetdefaultChecker;
+    let mut type_is = crate::checks::TypeIsChecker;
+    let mut if_not_assign = crate::checks::IfNotAssignChecker;
+    let mut unused_loop_var = crate::checks::UnusedLoopVarChecker;
+    let mut nested_with = crate::checks::NestedWithChecker;
+    let mut startswith_or = crate::checks::StartswithOrChecker;
+    let mut return_ternary = crate::checks::ReturnTernaryChecker;
+    let mut inf_while = crate::checks::InfiniteWhileChecker;
+    let mut sorted_sort = crate::checks::SortedSortChecker;
+    let mut wildcard_import = crate::checks::WildcardImportChecker;
+    let mut redundant_pass = crate::checks::RedundantPassChecker;
+    let mut is_literal = crate::checks::IsLiteralChecker;
+    let mut init_return = crate::checks::InitReturnChecker;
+    let mut dead_code = crate::checks::DeadCodeChecker;
+    let mut def_in_loop = crate::checks::DefInLoopChecker;
+    let mut builtin_shadow = crate::checks::BuiltinShadowChecker;
+    let mut raise_without_from = crate::checks::RaiseWithoutFromChecker::new();
     let mut power_opt = crate::checks::PowerOptChecker;
     let mut map_lambda = crate::checks::MapLambdaChecker;
     let mut list_to_set = crate::checks::ListToSetChecker;
@@ -194,6 +217,24 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut not_is_none,
         &mut aug_assign,
         &mut is_true,
+        &mut range_len,
+        &mut setdefault,
+        &mut type_is,
+        &mut if_not_assign,
+        &mut unused_loop_var,
+        &mut nested_with,
+        &mut startswith_or,
+        &mut return_ternary,
+        &mut inf_while,
+        &mut sorted_sort,
+        &mut wildcard_import,
+        &mut redundant_pass,
+        &mut is_literal,
+        &mut init_return,
+        &mut dead_code,
+        &mut def_in_loop,
+        &mut builtin_shadow,
+        &mut raise_without_from,
         &mut power_opt,
         &mut map_lambda,
         &mut list_to_set,
@@ -352,9 +393,9 @@ fn walk_stmts(
                 for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
-                    for c in checkers.iter_mut() { c.enter_block(); }
+                    for c in checkers.iter_mut() { c.enter_except(); }
                     walk_stmts(&h.body, source, line_starts, checkers, findings);
-                    for c in checkers.iter_mut() { c.exit_block(); }
+                    for c in checkers.iter_mut() { c.exit_except(); }
                 }
                 walk_stmts(&t.orelse, source, line_starts, checkers, findings);
                 walk_stmts(&t.finalbody, source, line_starts, checkers, findings);
@@ -382,9 +423,9 @@ fn walk_stmts(
                 for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
-                    for c in checkers.iter_mut() { c.enter_block(); }
+                    for c in checkers.iter_mut() { c.enter_except(); }
                     walk_stmts(&h.body, source, line_starts, checkers, findings);
-                    for c in checkers.iter_mut() { c.exit_block(); }
+                    for c in checkers.iter_mut() { c.exit_except(); }
                 }
                 walk_stmts(&t.orelse, source, line_starts, checkers, findings);
                 walk_stmts(&t.finalbody, source, line_starts, checkers, findings);

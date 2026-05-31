@@ -246,3 +246,86 @@ def good_is_false(x) -> int:
     if not x:
         return 1
     return 0
+
+
+def good_range_len(items) -> list:
+    return [item for item in items]
+
+
+def good_setdefault(d, k, v) -> None:
+    d[k].append(v)
+
+
+def good_isinstance(x) -> bool:
+    return isinstance(x, (int, str))
+
+
+def good_or_assign(x) -> int:
+    x = x or 42
+    return x
+
+
+def good_used_loop_var() -> None:
+    for i in range(10):
+        print(i)
+
+
+def good_single_with() -> None:
+    with open("/dev/null") as f:
+        print(f)
+
+
+def good_startswith_or(s) -> bool:
+    return s.startswith(("a", "b"))
+
+
+def good_return_cond(x) -> bool:
+    return x > 0
+
+
+def good_while_with_break() -> None:
+    while True:
+        break
+
+
+def good_direct_sort(items) -> None:
+    items.sort()
+
+
+from os import path
+
+
+def good_no_redundant_pass() -> None:
+    """docstring"""
+    print("body")
+
+
+def good_is_literal(x) -> bool:
+    return x == 5
+
+
+class GoodInitReturn:
+    def __init__(self) -> None:
+        pass
+
+
+def good_no_dead_code(x) -> None:
+    if x > 0:
+        print("maybe")
+
+
+def good_def_outside_loop() -> None:
+    def inner() -> None:
+        pass
+    for x in range(10):
+        inner()
+
+
+my_list = [1, 2, 3]
+
+
+def good_raise_with_from() -> None:
+    try:
+        pass
+    except Exception as e:
+        raise ValueError("with from") from e

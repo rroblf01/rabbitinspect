@@ -97,7 +97,7 @@ class TestRAB005DictKeys:
         assert f is not None
 
     def test_for_direct(self):
-        assert_no_findings("for k in d: pass")
+        assert_no_findings("for k in d: pass", ignore_codes={"RAB001", "RAB055"})
 
 
 class TestRAB006TypeComparison:
@@ -463,11 +463,11 @@ if x == None:
         assert "= x" in result
 
     def test_fix_dict_keys_loop(self):
-        source = "for k in d.keys(): pass"
+        source = "for item in d.keys():\n    print(item)"
         findings = analyze_code(source)
         fixes = [f["fix"] for f in findings if f.get("fix")]
         result = apply_fixes(source, fixes)
-        assert "for k in d:" in result
+        assert "for item in d:" in result
         assert ".keys()" not in result
 
     def test_fix_dict_keys_in(self):
@@ -875,7 +875,7 @@ class TestRAB042Readlines:
         assert f["fix"]["replacement"] == ""
 
     def test_no_warning_for_direct(self):
-        assert_no_findings("for line in f: pass")
+        assert_no_findings("for line in f: pass", ignore_codes={"RAB001", "RAB055"})
 
     def test_no_warning_method_call(self):
         assert_no_findings("data = f.read()")
@@ -1204,3 +1204,226 @@ class TestRAB053IsTrue:
 
     def test_no_warning_equality(self):
         assert_no_findings("if x == 1: pass")
+
+
+class TestRAB050RangeLen:
+    def test_range_len(self):
+        check_code("for i in range(len(items)):\n    print(items[i])", {"RAB050"})
+
+    def test_no_warning_direct_iter(self):
+        assert_no_findings("for item in items:\n    print(item)", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_range_with_arg(self):
+        assert_no_findings("for i in range(10):\n    print(i)", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB051Setdefault:
+    def test_setdefault_append(self):
+        check_code("d.setdefault(k, []).append(v)", {"RAB051"})
+
+    def test_setdefault_set_add(self):
+        check_code("d.setdefault(k, set()).add(v)", {"RAB051"})
+
+    def test_no_warning_normal_append(self):
+        assert_no_findings("d[k].append(v)", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB052TypeIs:
+    def test_type_or_type(self):
+        findings = check_code("type(x) == int or type(x) == str", {"RAB052"})
+        f = finding_by_code(findings, "RAB052")
+        assert f["fix"]["replacement"] == "isinstance(x, (int, str))"
+
+    def test_type_or_type_or_type(self):
+        findings = check_code("type(x) == int or type(x) == str or type(x) == bool", {"RAB052"})
+        f = finding_by_code(findings, "RAB052")
+        assert f["fix"]["replacement"] == "isinstance(x, (int, str, bool))"
+
+    def test_no_warning_single_type(self):
+        assert_no_findings("type(x) == int", ignore_codes={"RAB001", "RAB006", "RAB022"})
+
+
+class TestRAB054IfNotAssign:
+    def test_if_not_assign(self):
+        findings = check_code("if not x:\n    x = 42", {"RAB054"})
+        f = finding_by_code(findings, "RAB054")
+        assert f["fix"]["replacement"] == "x = x or 42"
+
+    def test_no_warning_else_clause(self):
+        assert_no_findings("if not x:\n    x = 42\nelse:\n    pass", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_different_var(self):
+        assert_no_findings("if not x:\n    y = 42", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB055UnusedLoopVar:
+    def test_unused_loop_var(self):
+        findings = check_code("for i in range(10):\n    print(42)", {"RAB055"})
+        f = finding_by_code(findings, "RAB055")
+        assert f["fix"]["replacement"] == "_"
+
+    def test_no_warning_used_var(self):
+        assert_no_findings("for i in range(10):\n    print(i)", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_underscore(self):
+        assert_no_findings("for _ in range(10):\n    print(42)", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB056NestedWith:
+    def test_nested_with(self):
+        check_code("with open('a') as f:\n    with open('b') as g:\n        pass", {"RAB056"})
+
+    def test_no_warning_single_with(self):
+        assert_no_findings("with open('a') as f:\n    pass", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB057StartswithOr:
+    def test_startswith_or(self):
+        findings = check_code("s.startswith('a') or s.startswith('b')", {"RAB057"})
+        f = finding_by_code(findings, "RAB057")
+        assert "startswith" in f["fix"]["replacement"]
+        assert "'a', 'b'" in f["fix"]["replacement"] or '"a", "b"' in f["fix"]["replacement"]
+
+    def test_endswith_or(self):
+        findings = check_code("s.endswith('.py') or s.endswith('.pyw')", {"RAB057"})
+        f = finding_by_code(findings, "RAB057")
+        assert "endswith" in f["fix"]["replacement"]
+        assert "'.py'" in f["fix"]["replacement"]
+
+    def test_no_warning_single(self):
+        assert_no_findings("s.startswith('a')", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB058ReturnTernary:
+    def test_return_true_cond(self):
+        findings = check_code("return True if x > 0 else False", {"RAB058"})
+        f = finding_by_code(findings, "RAB058")
+        assert f["fix"]["replacement"] == "return x > 0"
+
+    def test_return_false_cond(self):
+        findings = check_code("return False if x > 0 else True", {"RAB058"})
+        f = finding_by_code(findings, "RAB058")
+        assert f["fix"]["replacement"] == "return not x > 0"
+
+    def test_no_warning_normal_return(self):
+        assert_no_findings("return x > 0")
+
+
+class TestRAB059InfiniteWhile:
+    def test_while_true(self):
+        check_code("while True:\n    print(1)", {"RAB059"})
+
+    def test_no_warning_with_break(self):
+        assert_no_findings("while True:\n    if done:\n        break\n    print(1)", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_condition(self):
+        assert_no_findings("while x > 0:\n    print(1)", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB060SortedSort:
+    def test_sorted_sort(self):
+        findings = check_code("sorted(x).sort()", {"RAB060"})
+        f = finding_by_code(findings, "RAB060")
+        assert f["fix"]["replacement"] == "x.sort()"
+
+    def test_sorted_sort_with_key(self):
+        findings = check_code("sorted(lst, key=len).sort()", {"RAB060"})
+        f = finding_by_code(findings, "RAB060")
+        assert f["fix"]["replacement"] == "lst.sort(key=len)"
+
+    def test_no_warning_normal_sort(self):
+        assert_no_findings("x.sort()", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB061WildcardImport:
+    def test_wildcard_import(self):
+        check_code("from os import *", {"RAB061"})
+
+    def test_no_warning_specific_import(self):
+        assert_no_findings("from os import path", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB062RedundantPass:
+    def test_pass_after_docstring(self):
+        findings = check_code("def f():\n    \"\"\"doc\"\"\"\n    pass", {"RAB062"})
+        f = finding_by_code(findings, "RAB062")
+        assert f["fix"] is not None
+
+    def test_no_warning_only_pass(self):
+        assert_no_findings("def f():\n    pass", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB063IsLiteral:
+    def test_is_int(self):
+        findings = check_code("x is 5", {"RAB063"})
+        f = finding_by_code(findings, "RAB063")
+        assert f["fix"]["replacement"] == "x == 5"
+
+    def test_is_not_string(self):
+        findings = check_code("x is not 'hello'", {"RAB063"})
+        f = finding_by_code(findings, "RAB063")
+        assert f["fix"]["replacement"] == "x != 'hello'"
+
+    def test_is_float(self):
+        findings = check_code("x is 3.14", {"RAB063"})
+        f = finding_by_code(findings, "RAB063")
+        assert f["fix"]["replacement"] == "x == 3.14"
+
+    def test_no_warning_is_none(self):
+        assert_no_findings("x is None")
+
+
+class TestRAB064InitReturn:
+    def test_init_returns_value(self):
+        findings = check_code("class Foo:\n    def __init__(self):\n        return 42", {"RAB064"})
+        f = finding_by_code(findings, "RAB064")
+        assert f["fix"]["replacement"] == "return"
+
+    def test_init_returns_none_ok(self):
+        assert_no_findings("class Foo:\n    def __init__(self):\n        return", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB065DeadCode:
+    def test_if_true(self):
+        check_code("if True:\n    print(1)", {"RAB065"})
+
+    def test_if_false(self):
+        check_code("if False:\n    print(1)", {"RAB065"})
+
+    def test_no_warning_normal_if(self):
+        assert_no_findings("if x > 0:\n    print(1)", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB066DefInLoop:
+    def test_def_in_for_loop(self):
+        check_code("for x in range(10):\n    def f(): pass", {"RAB066"})
+
+    def test_def_in_while_loop(self):
+        check_code("while True:\n    def f(): pass\n    break", {"RAB066"})
+
+    def test_no_warning_def_outside(self):
+        assert_no_findings("def f(): pass", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB067BuiltinShadow:
+    def test_shadow_list(self):
+        findings = check_code("list = [1, 2, 3]", {"RAB067"})
+        f = finding_by_code(findings, "RAB067")
+        assert f["fix"]["replacement"] == "list_"
+
+    def test_shadow_dict_function(self):
+        check_code("def dict(): pass", {"RAB067"})
+
+    def test_no_warning_normal(self):
+        assert_no_findings("x = 42", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB068RaiseWithoutFrom:
+    def test_raise_in_except(self):
+        check_code("try:\n    pass\nexcept:\n    raise ValueError('x')", {"RAB068"})
+
+    def test_raise_with_from_ok(self):
+        assert_no_findings("try:\n    pass\nexcept Exception as e:\n    raise ValueError('x') from e", ignore_codes={"RAB001", "RAB022"})
+
+    def test_raise_outside_except_ok(self):
+        assert_no_findings("raise ValueError('x')")

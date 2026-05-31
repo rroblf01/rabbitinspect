@@ -2162,6 +2162,811 @@ impl Checker for IsTrueChecker {
     }
 }
 
+// ── RAB050: for i in range(len(seq)) → iterate directly ───────────────
+
+pub struct RangeLenChecker;
+
+impl Checker for RangeLenChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::For(f) = stmt else { return };
+        let Expr::Call(range_call) = &*f.iter else { return };
+        let Expr::Name(range_name) = &*range_call.func else { return };
+        if range_name.id.as_str() != "range" || range_call.args.len() != 1 { return; }
+        let Expr::Call(len_call) = &range_call.args[0] else { return };
+        let Expr::Name(len_name) = &*len_call.func else { return };
+        if len_name.id.as_str() != "len" || len_call.args.len() != 1 { return; }
+
+        let seq_src = expr_to_source(_source, &len_call.args[0]);
+        let range = f.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB050".to_string(),
+            message: format!("Iterate directly over '{}' instead of using 'range(len(...))'", seq_src),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB051: d.setdefault(k, []).append(v) → defaultdict[str, list] ────
+
+pub struct SetdefaultChecker;
+
+impl Checker for SetdefaultChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(append_call) = expr else { return };
+        let Expr::Attribute(append_attr) = &*append_call.func else { return };
+        if append_attr.attr.as_str() != "append" && append_attr.attr.as_str() != "add" { return; }
+        let Expr::Call(sd_call) = &*append_attr.value else { return };
+        let Expr::Attribute(sd_attr) = &*sd_call.func else { return };
+        if sd_attr.attr.as_str() != "setdefault" || sd_call.args.len() != 2 { return; }
+        let is_empty = |e: &Expr| -> bool {
+            matches!(e, Expr::List(l) if l.elts.is_empty())
+                || matches!(e, Expr::Call(c) if matches!(&*c.func, Expr::Name(n) if (n.id.as_str() == "set" || n.id.as_str() == "list") && c.args.is_empty() && c.keywords.is_empty()))
+        };
+        if !is_empty(&sd_call.args[1]) { return; }
+
+        let range = append_call.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB051".to_string(),
+            message: "Use 'collections.defaultdict(list)' instead of 'setdefault(..., []).append()'".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB052: type(x) == A or type(x) == B → isinstance(x, (A, B)) ─────
+
+pub struct TypeIsChecker;
+
+impl Checker for TypeIsChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::BoolOp(b) = expr else { return };
+        if !matches!(b.op, BoolOp::Or) || b.values.len() < 2 { return; }
+
+        let mut types: Vec<String> = Vec::new();
+        let mut obj_src: Option<String> = None;
+
+        for val in &b.values {
+            let Expr::Compare(c) = val else { return };
+            if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+            if !matches!(c.ops[0], CmpOp::Eq) { return; }
+            let Expr::Call(type_call) = &*c.left else { return };
+            let Expr::Name(type_name) = &*type_call.func else { return };
+            if type_name.id.as_str() != "type" || type_call.args.len() != 1 { return; }
+            let current_obj = expr_to_source(source, &type_call.args[0]);
+            match &obj_src {
+                Some(s) if *s != current_obj => return,
+                None => obj_src = Some(current_obj),
+                _ => {}
+            }
+            let Expr::Name(t) = &c.comparators[0] else { return };
+            types.push(t.id.to_string());
+        }
+
+        let Some(obj) = obj_src else { return };
+        let range = b.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let types_str = types.join(", ");
+        let replacement = format!("isinstance({}, ({}))", obj, types_str);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB052".to_string(),
+            message: format!("Use 'isinstance({}, ({}{}))' instead of multiple 'type()' checks", obj, types_str, if types.len() > 1 { "" } else { "," }),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB054: if not x: x = y → x = x or y ─────────────────────────────
+
+pub struct IfNotAssignChecker;
+
+impl Checker for IfNotAssignChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::If(i) = stmt else { return };
+        if !i.orelse.is_empty() || i.body.len() != 1 { return; }
+        let Expr::UnaryOp(u) = &*i.test else { return };
+        if !matches!(u.op, UnaryOp::Not) { return; }
+        let cond = &*u.operand;
+        let Stmt::Assign(a) = &i.body[0] else { return };
+        if a.targets.len() != 1 { return; }
+        let cond_src = expr_to_source(source, cond);
+        let target_src = expr_to_source(source, &a.targets[0]);
+        if target_src != cond_src { return; }
+
+        let value_src = expr_to_source(source, &a.value);
+        let range = i.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{} = {} or {}", cond_src, cond_src, value_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB054".to_string(),
+            message: format!("Use '{} = {} or {}' instead of 'if not {}: {} = {}'", cond_src, cond_src, value_src, cond_src, cond_src, value_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB055: Unused for-loop variable → _ ──────────────────────────────
+
+fn contains_name_ref(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Name(n) => n.id.as_str() == name,
+        Expr::Call(c) => {
+            contains_name_ref(&c.func, name)
+                || c.args.iter().any(|a| contains_name_ref(a, name))
+                || c.keywords.iter().any(|k| contains_name_ref(&k.value, name))
+        }
+        Expr::Attribute(a) => contains_name_ref(&a.value, name),
+        Expr::Subscript(s) => contains_name_ref(&s.value, name) || contains_name_ref(&s.slice, name),
+        Expr::BinOp(b) => contains_name_ref(&b.left, name) || contains_name_ref(&b.right, name),
+        Expr::UnaryOp(u) => contains_name_ref(&u.operand, name),
+        Expr::BoolOp(b) => b.values.iter().any(|v| contains_name_ref(v, name)),
+        Expr::Compare(c) => contains_name_ref(&c.left, name) || c.comparators.iter().any(|c| contains_name_ref(c, name)),
+        Expr::List(l) => l.elts.iter().any(|e| contains_name_ref(e, name)),
+        Expr::Tuple(t) => t.elts.iter().any(|e| contains_name_ref(e, name)),
+        Expr::Set(s) => s.elts.iter().any(|e| contains_name_ref(e, name)),
+        Expr::Dict(d) => d.keys.iter().flatten().chain(d.values.iter()).any(|e| contains_name_ref(e, name)),
+        Expr::IfExp(ifexp) => {
+            contains_name_ref(&ifexp.test, name)
+                || contains_name_ref(&ifexp.body, name)
+                || contains_name_ref(&ifexp.orelse, name)
+        }
+        Expr::Lambda(l) => {
+            iter_fn_args(&l.args).any(|arg| arg.def.annotation.as_ref().map_or(false, |a| contains_name_ref(a, name)))
+                || contains_name_ref(&l.body, name)
+        }
+        Expr::ListComp(lc) => {
+            lc.generators.iter().any(|g| {
+                contains_name_ref(&g.iter, name)
+                    || g.ifs.iter().any(|i| contains_name_ref(i, name))
+            }) || contains_name_ref(&lc.elt, name)
+        }
+        Expr::SetComp(sc) => {
+            sc.generators.iter().any(|g| {
+                contains_name_ref(&g.iter, name)
+                    || g.ifs.iter().any(|i| contains_name_ref(i, name))
+            }) || contains_name_ref(&sc.elt, name)
+        }
+        Expr::DictComp(dc) => {
+            dc.generators.iter().any(|g| {
+                contains_name_ref(&g.iter, name)
+                    || g.ifs.iter().any(|i| contains_name_ref(i, name))
+            }) || contains_name_ref(&dc.key, name) || contains_name_ref(&dc.value, name)
+        }
+        Expr::GeneratorExp(ge) => {
+            ge.generators.iter().any(|g| {
+                contains_name_ref(&g.iter, name)
+                    || g.ifs.iter().any(|i| contains_name_ref(i, name))
+            }) || contains_name_ref(&ge.elt, name)
+        }
+        Expr::NamedExpr(n) => contains_name_ref(&n.value, name) || contains_name_ref(&n.target, name),
+        Expr::Starred(s) => contains_name_ref(&s.value, name),
+        _ => false,
+    }
+}
+
+pub struct UnusedLoopVarChecker;
+
+impl Checker for UnusedLoopVarChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::For(f) = stmt else { return };
+        let Expr::Name(target) = &*f.target else { return };
+        if target.id.as_str() == "_" { return; }
+        if f.body.is_empty() { return; }
+        let used = f.body.iter().any(|s| stmt_contains_name_ref(s, &target.id));
+        let used_in_orelse = f.orelse.iter().any(|s| stmt_contains_name_ref(s, &target.id));
+        if used || used_in_orelse { return; }
+
+        let range = f.target.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB055".to_string(),
+            message: format!("Unused loop variable '{}', use '_' instead", target.id),
+            fix: Some(Fix { start, end, replacement: "_".to_string() }),
+        });
+    }
+}
+
+fn stmt_contains_name_ref(stmt: &Stmt, name: &str) -> bool {
+    match stmt {
+        Stmt::Expr(e) => contains_name_ref(&e.value, name),
+        Stmt::Assign(a) => {
+            a.targets.iter().any(|t| contains_name_ref(t, name))
+                || contains_name_ref(&a.value, name)
+        }
+        Stmt::AugAssign(a) => contains_name_ref(&a.value, name),
+        Stmt::Return(r) => r.value.as_ref().map_or(false, |v| contains_name_ref(v, name)),
+        Stmt::If(i) => {
+            contains_name_ref(&i.test, name)
+                || i.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                || i.orelse.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::For(f) => {
+            contains_name_ref(&f.iter, name)
+                || f.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                || f.orelse.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::While(w) => {
+            contains_name_ref(&w.test, name)
+                || w.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                || w.orelse.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::With(w) => {
+            w.items.iter().any(|item| {
+                contains_name_ref(&item.context_expr, name)
+                    || item.optional_vars.as_ref().map_or(false, |v| contains_name_ref(v, name))
+            }) || w.body.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::Try(t) => {
+            t.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                || t.handlers.iter().any(|h| match h {
+                    ExceptHandler::ExceptHandler(eh) => {
+                        eh.body.iter().any(|s| stmt_contains_name_ref(s, name))
+                    }
+                })
+                || t.orelse.iter().any(|s| stmt_contains_name_ref(s, name))
+                || t.finalbody.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::FunctionDef(f) => {
+            f.body.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::AsyncFunctionDef(f) => {
+            f.body.iter().any(|s| stmt_contains_name_ref(s, name))
+        }
+        Stmt::AnnAssign(a) => a.value.as_ref().map_or(false, |v| contains_name_ref(v, name)),
+        Stmt::Raise(r) => r.exc.as_ref().map_or(false, |e| contains_name_ref(e, name)),
+        Stmt::Assert(a) => contains_name_ref(&a.test, name) || a.msg.as_ref().map_or(false, |m| contains_name_ref(m, name)),
+        Stmt::Delete(d) => d.targets.iter().any(|t| contains_name_ref(t, name)),
+        Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Pass(_) | Stmt::Break(_) | Stmt::Continue(_) => false,
+        _ => false,
+    }
+}
+
+// ── RAB056: Nested with statements → single with ─────────────────────
+
+pub struct NestedWithChecker;
+
+impl Checker for NestedWithChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::With(w) = stmt else { return };
+        if w.body.len() != 1 { return; }
+        let Stmt::With(_inner_w) = &w.body[0] else { return };
+
+        let range = w.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB056".to_string(),
+            message: "Nested 'with' statements can be combined into a single 'with A() as a, B() as b:'".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB057: s.startswith('a') or s.startswith('b') → s.startswith(...) ─
+
+pub struct StartswithOrChecker;
+
+impl Checker for StartswithOrChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::BoolOp(b) = expr else { return };
+        if !matches!(b.op, BoolOp::Or) || b.values.len() < 2 { return; }
+
+        let mut obj_src: Option<String> = None;
+        let mut method: Option<String> = None;
+        let mut args: Vec<String> = Vec::new();
+
+        for val in &b.values {
+            let Expr::Call(c) = val else { return };
+            let Expr::Attribute(a) = &*c.func else { return };
+            if a.attr.as_str() != "startswith" && a.attr.as_str() != "endswith" { return; }
+            if c.args.len() != 1 { return; }
+            let current_obj = expr_to_source(source, &a.value);
+            match &obj_src {
+                Some(s) if *s != current_obj => return,
+                None => obj_src = Some(current_obj),
+                _ => {}
+            }
+            match &method {
+                Some(m) if *m != a.attr.as_str() => return,
+                None => method = Some(a.attr.to_string()),
+                _ => {}
+            }
+            args.push(expr_to_source(source, &c.args[0]));
+        }
+
+        let Some(obj) = obj_src else { return };
+        let Some(meth) = method else { return };
+        let range = b.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{}.{}(({}))", obj, meth, args.join(", "));
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB057".to_string(),
+            message: format!("Use '{}.{}((...))' instead of repeated '{}' calls", obj, meth, meth),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB058: return True if cond else False → return cond ─────────────
+
+pub struct ReturnTernaryChecker;
+
+impl Checker for ReturnTernaryChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Return(r) = stmt else { return };
+        let Some(ret_val) = &r.value else { return };
+        let Expr::IfExp(ifexp) = &**ret_val else { return };
+        let body_true = matches!(&*ifexp.body, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
+        let body_false = matches!(&*ifexp.body, Expr::Constant(c) if matches!(&c.value, Constant::Bool(false)));
+        let orelse_true = matches!(&*ifexp.orelse, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
+        let orelse_false = matches!(&*ifexp.orelse, Expr::Constant(c) if matches!(&c.value, Constant::Bool(false)));
+        let ret_true = body_true && orelse_false;
+        let ret_false = body_false && orelse_true;
+        if !ret_true && !ret_false { return; }
+
+        let cond_src = expr_to_source(source, &ifexp.test);
+        let range = r.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let (msg, replacement) = if ret_true {
+            ("Use 'return <cond>' instead of 'return True if cond else False'", format!("return {}", cond_src))
+        } else {
+            ("Use 'return not <cond>' instead of 'return False if cond else True'", format!("return not {}", cond_src))
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB058".to_string(),
+            message: msg.to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+fn has_break_stmt(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Break(_) => true,
+        Stmt::If(i) => has_break_stmt(&i.body) || has_break_stmt(&i.orelse),
+        Stmt::Try(t) => {
+            has_break_stmt(&t.body)
+                || t.handlers.iter().any(|h| match h {
+                    ExceptHandler::ExceptHandler(eh) => has_break_stmt(&eh.body),
+                })
+                || has_break_stmt(&t.orelse)
+                || has_break_stmt(&t.finalbody)
+        }
+        Stmt::For(f) => has_break_stmt(&f.body) || has_break_stmt(&f.orelse),
+        Stmt::While(ww) => has_break_stmt(&ww.body) || has_break_stmt(&ww.orelse),
+        Stmt::With(ww) => has_break_stmt(&ww.body),
+        _ => false,
+    })
+}
+
+// ── RAB059: while True without break → possible infinite loop ────────
+
+pub struct InfiniteWhileChecker;
+
+impl Checker for InfiniteWhileChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::While(w) = stmt else { return };
+        let is_true = matches!(&*w.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
+        if !is_true { return; }
+        let has_break = has_break_stmt(&w.body);
+        if has_break { return; }
+
+        let range = w.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB059".to_string(),
+            message: "'while True:' without 'break' results in an infinite loop".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB060: sorted(x).sort() → x.sort() ──────────────────────────────
+
+pub struct SortedSortChecker;
+
+impl Checker for SortedSortChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(outer) = expr else { return };
+        let Expr::Attribute(attr) = &*outer.func else { return };
+        if attr.attr.as_str() != "sort" { return; }
+        let Expr::Call(inner) = &*attr.value else { return };
+        let Expr::Name(n) = &*inner.func else { return };
+        if n.id.as_str() != "sorted" || inner.args.is_empty() { return; }
+
+        let first_arg_src = expr_to_source(source, &inner.args[0]);
+        let kw_srcs: Vec<String> = inner.keywords.iter().map(|kw| {
+            let arg_name = kw.arg.as_deref().unwrap_or("");
+            let val_src = expr_to_source(source, &kw.value);
+            format!("{}={}", arg_name, val_src)
+        }).collect();
+
+        let range = outer.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = if kw_srcs.is_empty() {
+            format!("{}.sort()", first_arg_src)
+        } else {
+            format!("{}.sort({})", first_arg_src, kw_srcs.join(", "))
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB060".to_string(),
+            message: format!("Use '{}' instead of 'sorted(...).sort()'", replacement),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB061: from module import * ──────────────────────────────────────
+
+pub struct WildcardImportChecker;
+
+impl Checker for WildcardImportChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::ImportFrom(i) = stmt else { return };
+        let has_wildcard = i.names.iter().any(|alias| alias.name.as_str() == "*");
+        if !has_wildcard { return; }
+        let range = i.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB061".to_string(),
+            message: "Wildcard import 'from module import *' pollutes the namespace, import specific names instead".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB062: Redundant pass after docstring ────────────────────────────
+
+pub struct RedundantPassChecker;
+
+impl Checker for RedundantPassChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let body: &[Stmt] = match stmt {
+            Stmt::FunctionDef(f) => &f.body,
+            Stmt::AsyncFunctionDef(f) => &f.body,
+            Stmt::ClassDef(c) => &c.body,
+            _ => return,
+        };
+        if body.len() < 2 { return; }
+        let has_docstring = matches!(&body[0], Stmt::Expr(e) if matches!(&*e.value, Expr::Constant(c) if matches!(&c.value, Constant::Str(_))));
+        if !has_docstring { return; }
+        let pass_stmt = match &body[1] {
+            Stmt::Pass(p) => p,
+            _ => return,
+        };
+        let range = pass_stmt.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let line_idx = line_starts.binary_search(&start).unwrap_or_else(|i| i.saturating_sub(1));
+        let line_start = line_starts[line_idx];
+        let line_end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB062".to_string(),
+            message: "Redundant 'pass' after docstring".to_string(),
+            fix: Some(Fix { start: line_start, end: line_end, replacement: String::new() }),
+        });
+    }
+}
+
+// ── RAB063: x is 5 / x is "str" → x == 5 / x == "str" ───────────────
+
+pub struct IsLiteralChecker;
+
+impl Checker for IsLiteralChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Compare(c) = expr else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        let is_is = matches!(c.ops[0], CmpOp::Is);
+        let is_is_not = matches!(c.ops[0], CmpOp::IsNot);
+        if !is_is && !is_is_not { return; }
+        let is_literal = match &c.comparators[0] {
+            Expr::Constant(cc) => matches!(&cc.value, Constant::Int(_) | Constant::Float(_) | Constant::Str(_) | Constant::Bytes(_)),
+            _ => false,
+        };
+        if !is_literal { return; }
+
+        let left_src = expr_to_source(source, &c.left);
+        let right_src = expr_to_source(source, &c.comparators[0]);
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let op = if is_is { "==" } else { "!=" };
+        let replacement = format!("{} {} {}", left_src, op, right_src);
+        let msg = if is_is {
+            format!("Use '{} == {}' instead of '{} is {}' (identity check with literal)", left_src, right_src, left_src, right_src)
+        } else {
+            format!("Use '{} != {}' instead of '{} is not {}' (identity check with literal)", left_src, right_src, left_src, right_src)
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB063".to_string(),
+            message: msg,
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB064: __init__ returning non-None value ─────────────────────────
+
+pub struct InitReturnChecker;
+
+impl Checker for InitReturnChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::FunctionDef(f) = stmt else { return };
+        if f.name.as_str() != "__init__" { return; }
+        for s in &f.body {
+            let Stmt::Return(r) = s else { continue };
+            let Some(val) = &r.value else { continue };
+            let is_none = matches!(&**val, Expr::Constant(c) if matches!(&c.value, Constant::None));
+            if is_none { continue; }
+            let range = r.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB064".to_string(),
+                message: "'__init__' should not return a value, use bare 'return' instead".to_string(),
+                fix: Some(Fix { start, end, replacement: "return".to_string() }),
+            });
+        }
+    }
+}
+
+// ── RAB065: if True: / if False: dead code ────────────────────────────
+
+pub struct DeadCodeChecker;
+
+impl Checker for DeadCodeChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::If(i) = stmt else { return };
+        let is_true = matches!(&*i.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
+        let is_false = matches!(&*i.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(false)));
+        if !is_true && !is_false { return; }
+        let range = i.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let tag = if is_true { "True" } else { "False" };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB065".to_string(),
+            message: format!("'if {}:' is always {}, consider removing the condition", tag, if is_true { "true" } else { "false" }),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB066: Function definition inside a loop ─────────────────────────
+
+pub struct DefInLoopChecker;
+
+impl DefInLoopChecker {
+    fn report_def(name: &str, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let range = stmt.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB066".to_string(),
+            message: format!("Function '{}' defined inside a loop, consider moving it outside", name),
+            fix: None,
+        });
+    }
+
+    fn check_defs(stmts: &[Stmt], source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::FunctionDef(f) => {
+                    Self::report_def(f.name.as_str(), stmt, source, line_starts, findings);
+                }
+                Stmt::AsyncFunctionDef(f) => {
+                    Self::report_def(f.name.as_str(), stmt, source, line_starts, findings);
+                }
+                Stmt::ClassDef(_) => {} // stop recursion
+                Stmt::For(f) => {
+                    Self::check_defs(&f.body, source, line_starts, findings);
+                    Self::check_defs(&f.orelse, source, line_starts, findings);
+                }
+                Stmt::AsyncFor(f) => {
+                    Self::check_defs(&f.body, source, line_starts, findings);
+                    Self::check_defs(&f.orelse, source, line_starts, findings);
+                }
+                Stmt::While(w) => {
+                    Self::check_defs(&w.body, source, line_starts, findings);
+                    Self::check_defs(&w.orelse, source, line_starts, findings);
+                }
+                Stmt::If(i) => {
+                    Self::check_defs(&i.body, source, line_starts, findings);
+                    Self::check_defs(&i.orelse, source, line_starts, findings);
+                }
+                Stmt::With(w) => { Self::check_defs(&w.body, source, line_starts, findings); }
+                Stmt::Try(t) => {
+                    Self::check_defs(&t.body, source, line_starts, findings);
+                    for handler in &t.handlers {
+                        let ExceptHandler::ExceptHandler(eh) = handler;
+                        Self::check_defs(&eh.body, source, line_starts, findings);
+                    }
+                    Self::check_defs(&t.orelse, source, line_starts, findings);
+                    Self::check_defs(&t.finalbody, source, line_starts, findings);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Checker for DefInLoopChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        match stmt {
+            Stmt::For(f) => {
+                Self::check_defs(&f.body, source, line_starts, findings);
+                Self::check_defs(&f.orelse, source, line_starts, findings);
+            }
+            Stmt::AsyncFor(f) => {
+                Self::check_defs(&f.body, source, line_starts, findings);
+                Self::check_defs(&f.orelse, source, line_starts, findings);
+            }
+            Stmt::While(w) => {
+                Self::check_defs(&w.body, source, line_starts, findings);
+                Self::check_defs(&w.orelse, source, line_starts, findings);
+            }
+            _ => {}
+        }
+    }
+}
+
+// ── RAB067: Shadowing built-in names ──────────────────────────────────
+
+const BUILTINS: &[&str] = &[
+    "abs", "all", "any", "ascii", "bin", "bool", "bytearray", "bytes", "callable",
+    "chr", "classmethod", "compile", "complex", "delattr", "dict", "dir", "divmod",
+    "enumerate", "eval", "exec", "filter", "float", "format", "frozenset", "getattr",
+    "globals", "hasattr", "hash", "hex", "id", "input", "int", "isinstance",
+    "issubclass", "iter", "len", "list", "locals", "map", "max", "memoryview", "min",
+    "next", "object", "oct", "open", "ord", "pow", "print", "property", "range",
+    "repr", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod",
+    "str", "sum", "super", "tuple", "type", "vars", "zip", "__import__",
+];
+
+pub struct BuiltinShadowChecker;
+
+impl BuiltinShadowChecker {
+    fn check_name(name: &str) -> Option<&'static str> {
+        let stripped = name.strip_suffix("_").unwrap_or(name);
+        BUILTINS.iter().find(|b| **b == stripped).copied()
+    }
+}
+
+impl Checker for BuiltinShadowChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let targets: Option<&[Expr]> = match stmt {
+            Stmt::Assign(a) => Some(&a.targets),
+            Stmt::FunctionDef(f) => {
+                if let Some(builtin) = Self::check_name(f.name.as_str()) {
+                    let range = stmt.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB067".to_string(),
+                        message: format!("Function '{}' shadows built-in '{}', rename to '{}_'", f.name, builtin, builtin),
+                        fix: Some(Fix { start, end, replacement: format!("def {}_", builtin) }),
+                    });
+                }
+                return;
+            }
+            _ => return,
+        };
+        let Some(targets) = targets else { return };
+        for target in targets {
+            let Expr::Name(n) = target else { continue };
+            let Some(builtin) = Self::check_name(n.id.as_str()) else { continue };
+            let range = n.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB067".to_string(),
+                message: format!("Variable '{}' shadows built-in '{}', rename to '{}_'", n.id, builtin, builtin),
+                fix: Some(Fix { start, end, replacement: format!("{}_", builtin) }),
+            });
+        }
+    }
+}
+
+// ── RAB068: raise Exception() without from inside except ──────────────
+
+pub struct RaiseWithoutFromChecker {
+    in_except: bool,
+}
+
+impl RaiseWithoutFromChecker {
+    pub fn new() -> Self {
+        Self { in_except: false }
+    }
+}
+
+impl Checker for RaiseWithoutFromChecker {
+    fn enter_except(&mut self) { self.in_except = true; }
+    fn exit_except(&mut self) { self.in_except = false; }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if !self.in_except { return; }
+        let Stmt::Raise(r) = stmt else { return };
+        if r.cause.is_some() { return; }
+        if r.exc.is_none() { return; }
+        let range = r.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB068".to_string(),
+            message: "Raise inside 'except' without 'from' may lose original traceback".to_string(),
+            fix: None,
+        });
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {
