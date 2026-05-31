@@ -73,13 +73,26 @@ fixed = apply_fixes(source, fixes)
 | **RAB008** | `for i in range(len(x))` instead of `enumerate(x)` | `enumerate` avoids the double lookup `x[i]` and is more idiomatic | ❌ (warning only) |
 | **RAB009** | String concatenation in a loop (`s += str(x)`) | `str.join()` allocates once instead of O(n) intermediate strings | ❌ (warning only) |
 | **RAB010** | `set(list(x))` — unnecessary `list()` call | Skips creating an intermediate list before building the set | ❌ (warning only) |
+| **RAB011** | Mutable default argument (`x=[]`, `x={}`) | Creates one mutable object shared across all calls; use `None` + init inside | ❌ (warning only) |
+| **RAB012** | Bare `except:` clause | Catches `SystemExit`/`KeyboardInterrupt`; always specify exception type | ❌ (warning only) |
+| **RAB013** | Bare `except: pass` | Silently swallows all errors; at minimum log the exception | ❌ (warning only) |
+| **RAB014** | `class Foo(object)` in Python 3 | `object` base is redundant in Python 3; use `class Foo:` directly | ❌ (warning only) |
 | **RAB015** | `k in d.keys()` instead of `k in d` | `in d` is faster and avoids creating a `.keys()` view | ✅ |
+| **RAB016** | `.format()` instead of f-string | f-strings are faster and more readable | ❌ (warning only) |
+| **RAB017** | Function too long (> 30 statements) | Long functions are hard to understand and test; suggests refactoring | ❌ (warning only) |
+| **RAB018** | Too many parameters (> 6) | Many parameters indicate poor cohesion; suggests refactoring | ❌ (warning only) |
+| **RAB019** | `os.system()` instead of `subprocess.run()` | `os.system()` gives no control over stdin/stdout; `subprocess` is more flexible | ❌ (warning only) |
+| **RAB020** | `time.time()` for benchmarking | `time.time()` has low resolution; use `time.perf_counter()` for accurate timing | ❌ (warning only) |
+| **RAB022** | Public function missing return type hint | Type hints improve readability and enable static checking | ❌ (warning only) |
 | **RAB023** | Redundant `.call()` method call | Call the object directly instead of through `.call()` | ❌ (warning only) |
+| **RAB024** | Deep comprehension (> 2 nested `for` clauses) | Deep comprehensions are hard to read; consider helper loops | ❌ (warning only) |
+| **RAB025** | Long if-elif chain (> 3 branches) | Long chains are hard to maintain; consider dict dispatch | ❌ (warning only) |
 | **RAB029** | `x == True` / `x == False` instead of `x` / `not x` | Direct boolean context avoids the comparison overhead | ✅ |
 | **RAB030** | `if cond: return True else: return False` → `return cond` | Direct return is shorter and avoids unnecessary branching | ✅ |
 | **RAB032** | `bool(x)` inside a boolean context | `bool()` is redundant; the value is already truthy/falsy | ✅ |
 | **RAB034** | `assert True` / `assert False` — always no-op or always failing | `assert True` is dead code; `assert False` should use proper error handling | ✅ |
 | **RAB101** | Cyclomatic complexity > 10 — too many decision paths | High complexity makes code hard to test and maintain; suggests refactoring | ❌ (warning only) |
+| **RAB102** | Cognitive complexity > 15 — deep nesting + decision points | Measures how hard code is to understand; suggests refactoring | ❌ (warning only) |
 
 ---
 

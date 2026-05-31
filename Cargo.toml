@@ -9,8 +9,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
-rustpython-parser = "0.4"
-rustpython-ast = "0.4"
+rustpython-parser = "0.4.0"
+rustpython-ast = "0.4.0"
 rustc-hash = "2.1"
 
 [profile.release]

@@ -3,8 +3,10 @@ use rustpython_parser::{ast, Parse};
 
 pub const CHECK_CODES: &[&str] = &[
     "RAB001", "RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
-    "RAB008", "RAB009", "RAB010", "RAB015", "RAB023",
-    "RAB029", "RAB030", "RAB032", "RAB034", "RAB101",
+    "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013", "RAB014",
+    "RAB015", "RAB016", "RAB017", "RAB018", "RAB019", "RAB020", "RAB022",
+    "RAB023", "RAB024", "RAB025", "RAB029", "RAB030", "RAB032", "RAB034",
+    "RAB101", "RAB102",
 ];
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,8 @@ fn compute_line_starts(source: &str) -> Vec<usize> {
 pub trait Checker {
     fn enter_scope(&mut self) {}
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {}
+    fn enter_block(&mut self) {}
+    fn exit_block(&mut self) {}
     fn visit_stmt(
         &mut self,
         _stmt: &Stmt,
@@ -101,6 +105,19 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut bool_call = crate::checks::BoolCallChecker;
     let mut assert_const = crate::checks::AssertConstantChecker;
     let mut complexity = crate::checks::ComplexityChecker::new();
+    let mut mutable_default = crate::checks::MutableDefaultChecker;
+    let mut bare_except = crate::checks::BareExceptChecker;
+    let mut bare_except_pass = crate::checks::BareExceptPassChecker;
+    let mut class_object = crate::checks::ClassObjectChecker;
+    let mut format_call = crate::checks::FormatCallChecker;
+    let mut func_length = crate::checks::FunctionLengthChecker::new();
+    let mut too_many_params = crate::checks::TooManyParamsChecker;
+    let mut os_system = crate::checks::OsSystemChecker;
+    let mut time_time = crate::checks::TimeTimeChecker;
+    let mut missing_hint = crate::checks::MissingReturnHintChecker;
+    let mut deep_comp = crate::checks::DeepComprehensionChecker;
+    let mut long_if = crate::checks::LongIfChainChecker;
+    let mut cognitive = crate::checks::CognitiveComplexityChecker::new();
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -120,6 +137,19 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut bool_call,
         &mut assert_const,
         &mut complexity,
+        &mut mutable_default,
+        &mut bare_except,
+        &mut bare_except_pass,
+        &mut class_object,
+        &mut format_call,
+        &mut func_length,
+        &mut too_many_params,
+        &mut os_system,
+        &mut time_time,
+        &mut missing_hint,
+        &mut deep_comp,
+        &mut long_if,
+        &mut cognitive,
     ];
 
     for c in checkers.iter_mut() {
@@ -215,23 +245,31 @@ fn walk_stmts(
             Stmt::For(f) => {
                 walk_expr(&f.target, source, line_starts, checkers, findings);
                 walk_expr(&f.iter, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&f.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 walk_stmts(&f.orelse, source, line_starts, checkers, findings);
             }
             Stmt::AsyncFor(f) => {
                 walk_expr(&f.target, source, line_starts, checkers, findings);
                 walk_expr(&f.iter, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&f.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 walk_stmts(&f.orelse, source, line_starts, checkers, findings);
             }
             Stmt::While(w) => {
                 walk_expr(&w.test, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&w.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 walk_stmts(&w.orelse, source, line_starts, checkers, findings);
             }
             Stmt::If(i) => {
                 walk_expr(&i.test, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&i.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 walk_stmts(&i.orelse, source, line_starts, checkers, findings);
             }
             Stmt::With(w) => {
@@ -239,24 +277,32 @@ fn walk_stmts(
                     walk_expr(&item.context_expr, source, line_starts, checkers, findings);
                     walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, findings);
                 }
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&w.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
             }
             Stmt::AsyncWith(w) => {
                 for item in &w.items {
                     walk_expr(&item.context_expr, source, line_starts, checkers, findings);
                     walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, findings);
                 }
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&w.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
             }
             Stmt::Raise(r) => {
                 walk_expr_opt(r.exc.as_deref(), source, line_starts, checkers, findings);
                 walk_expr_opt(r.cause.as_deref(), source, line_starts, checkers, findings);
             }
             Stmt::Try(t) => {
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&t.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
+                    for c in checkers.iter_mut() { c.enter_block(); }
                     walk_stmts(&h.body, source, line_starts, checkers, findings);
+                    for c in checkers.iter_mut() { c.exit_block(); }
                 }
                 walk_stmts(&t.orelse, source, line_starts, checkers, findings);
                 walk_stmts(&t.finalbody, source, line_starts, checkers, findings);
@@ -273,14 +319,20 @@ fn walk_stmts(
             Stmt::Match(m) => {
                 walk_expr(&m.subject, source, line_starts, checkers, findings);
                 for case in &m.cases {
+                    for c in checkers.iter_mut() { c.enter_block(); }
                     walk_stmts(&case.body, source, line_starts, checkers, findings);
+                    for c in checkers.iter_mut() { c.exit_block(); }
                 }
             }
             Stmt::TryStar(t) => {
+                for c in checkers.iter_mut() { c.enter_block(); }
                 walk_stmts(&t.body, source, line_starts, checkers, findings);
+                for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
+                    for c in checkers.iter_mut() { c.enter_block(); }
                     walk_stmts(&h.body, source, line_starts, checkers, findings);
+                    for c in checkers.iter_mut() { c.exit_block(); }
                 }
                 walk_stmts(&t.orelse, source, line_starts, checkers, findings);
                 walk_stmts(&t.finalbody, source, line_starts, checkers, findings);

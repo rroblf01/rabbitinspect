@@ -354,7 +354,7 @@ class TestRAB101CyclomaticComplexity:
     def test_simple_function_no_warning(self):
         assert_no_findings(
             """
-def simple(x):
+def simple(x) -> int:
     return x + 1
 """
         )
@@ -387,7 +387,7 @@ def complex_func(x, y, z):
     def test_no_warning_simple_conditional(self):
         assert_no_findings(
             """
-def check(x):
+def check(x) -> bool:
     if x > 0:
         return True
     return False
@@ -499,3 +499,242 @@ if x == None:
         result = apply_fixes(source, fixes)
         assert "else:" not in result
         assert "return 0" in result
+
+
+class TestRAB011MutableDefault:
+    def test_list_default(self):
+        check_code("def foo(x=[]): pass", {"RAB011"})
+
+    def test_dict_default(self):
+        check_code("def foo(x={}): pass", {"RAB011"})
+
+    def test_set_default(self):
+        check_code("def foo(x={1}): pass", {"RAB011"})
+
+    def test_no_warning_none_default(self):
+        assert_no_findings("def foo(x=None) -> int: pass")
+
+    def test_no_warning_int_default(self):
+        assert_no_findings("def foo(x=5) -> int: pass")
+
+    def test_async_func(self):
+        check_code("async def foo(x=[]): pass", {"RAB011"})
+
+
+class TestRAB012BareExcept:
+    def test_bare_except(self):
+        check_code("try:\n    pass\nexcept:\n    pass", {"RAB012"})
+
+    def test_no_warning_typed_except(self):
+        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass")
+
+    def test_no_warning_except_as(self):
+        assert_no_findings("try:\n    pass\nexcept Exception as e:\n    pass")
+
+
+class TestRAB013BareExceptPass:
+    def test_bare_except_pass(self):
+        check_code("try:\n    pass\nexcept:\n    pass", {"RAB013"})
+
+    def test_no_warning_except_with_action(self):
+        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass")
+
+
+class TestRAB014ClassObject:
+    def test_class_object(self):
+        check_code("class Foo(object): pass", {"RAB014"})
+
+    def test_no_warning_no_base(self):
+        assert_no_findings("class Foo: pass")
+
+    def test_no_warning_other_base(self):
+        assert_no_findings("class Foo(Base): pass")
+
+    def test_no_warning_multiple_bases(self):
+        assert_no_findings("class Foo(Base, metaclass=ABCMeta): pass")
+
+
+class TestRAB016FormatCall:
+    def test_format_call(self):
+        check_code('result = "Hello {}".format(name)', {"RAB016"})
+
+    def test_no_warning_fstring(self):
+        assert_no_findings('result = f"Hello {name}"')
+
+    def test_no_warning_no_args_format(self):
+        assert_no_findings('result = "Hello".format()')
+
+    def test_multiple_args(self):
+        check_code('result = "{a} {b}".format(a, b)', {"RAB016"})
+
+
+class TestRAB017FunctionLength:
+    def test_short_function_no_warning(self):
+        assert_no_findings(
+            """
+def short(x) -> int:
+    y = x + 1
+    return y
+"""
+        )
+
+    def test_long_function(self):
+        lines = "\n".join(f"    x{i} = {i}" for i in range(35))
+        source = f"def long_func():\n{lines}\n"
+        check_code(source, {"RAB017"})
+
+    def test_long_method_no_warning_outside_func(self):
+        source = "\n".join(f"x{i} = {i}" for i in range(35))
+        assert_no_findings(source)
+
+
+class TestRAB018TooManyParams:
+    def test_too_many_params(self):
+        check_code("def foo(a, b, c, d, e, f, g): pass", {"RAB018"})
+
+    def test_no_warning_six_params(self):
+        assert_no_findings("def foo(a, b, c, d, e, f) -> None: pass")
+
+    def test_no_warning_one_param(self):
+        assert_no_findings("def foo(x) -> None: pass")
+
+
+class TestRAB019OsSystem:
+    def test_os_system(self):
+        check_code("import os; os.system('ls')", {"RAB019"})
+
+    def test_no_warning_other_call(self):
+        assert_no_findings("import os; os.listdir('.')")
+
+
+class TestRAB020TimeTime:
+    def test_time_time(self):
+        check_code("import time; t = time.time()", {"RAB020"})
+
+    def test_no_warning_other_call(self):
+        assert_no_findings("import time; t = time.sleep(1)")
+
+
+class TestRAB022MissingReturnHint:
+    def test_missing_return_hint(self):
+        check_code("def foo(x): return x", {"RAB022"})
+
+    def test_no_warning_with_hint(self):
+        assert_no_findings("def foo(x: int) -> int: return x")
+
+    def test_no_warning_private_func(self):
+        assert_no_findings("def _internal(x): return x")
+
+    def test_async_func(self):
+        check_code("async def fetch(url): return None", {"RAB022"})
+
+
+class TestRAB024DeepComprehension:
+    def test_deep_list_comp(self):
+        check_code("result = [[x for y in z for w in z for x in w] for z in items]", {"RAB024"})
+
+    def test_no_warning_simple_comp(self):
+        assert_no_findings("result = [x for x in items]")
+
+    def test_no_warning_two_levels(self):
+        assert_no_findings("result = [x for y in z for x in y]")
+
+    def test_deep_generator(self):
+        check_code("result = (x for y in z for w in z for x in w)", {"RAB024"})
+
+
+class TestRAB025LongIfChain:
+    def test_long_if_chain(self):
+        source = """
+if x == 1:
+    pass
+elif x == 2:
+    pass
+elif x == 3:
+    pass
+elif x == 4:
+    pass
+"""
+        check_code(source, {"RAB025"})
+
+    def test_no_warning_short_chain(self):
+        source = """
+if x == 1:
+    pass
+elif x == 2:
+    pass
+elif x == 3:
+    pass
+"""
+        assert_no_findings(source)
+
+    def test_no_warning_single_if(self):
+        assert_no_findings("if x > 0: pass")
+
+
+class TestRAB102CognitiveComplexity:
+    def test_simple_function_no_warning(self):
+        assert_no_findings(
+            """
+def simple(x) -> int:
+    return x + 1
+"""
+        )
+    def test_high_cognitive_complexity(self):
+        source = """
+def complex_func(x, y, z):
+    if x > 0:
+        for i in range(y):
+            if i % 2 == 0:
+                print(i)
+            elif i % 3 == 0:
+                print("three")
+            else:
+                print("other")
+    elif z > 0:
+        while z > 0:
+            if z == 5:
+                break
+            z -= 1
+    else:
+        try:
+            pass
+        except ValueError:
+            pass
+        except TypeError:
+            pass
+    return x
+"""
+        check_code(source, {"RAB102"})
+
+
+class TestEndToEndAll:
+    def test_all_checks_bad(self):
+        with open("tests/fixtures/all_checks_bad.py") as f:
+            source = f.read()
+        findings = analyze_code(source)
+        codes = {f["code"] for f in findings}
+        all_codes = {"RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
+                     "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013",
+                     "RAB014", "RAB015", "RAB016", "RAB017", "RAB018", "RAB019",
+                     "RAB020", "RAB022", "RAB023", "RAB024", "RAB025",
+                     "RAB029", "RAB030", "RAB032", "RAB034",
+                     "RAB101", "RAB102"}
+        for code in all_codes:
+            assert code in codes, f"Expected {code} not found in {codes}"
+
+    def test_all_checks_good(self):
+        with open("tests/fixtures/all_checks_good.py") as f:
+            source = f.read()
+        findings = analyze_code(source)
+        codes = {f["code"] for f in findings}
+        forbidden_in_good = {"RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
+                             "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013",
+                             "RAB014", "RAB015", "RAB016", "RAB017", "RAB018", "RAB019",
+                             "RAB020", "RAB022", "RAB023", "RAB024", "RAB025",
+                             "RAB029", "RAB030", "RAB032", "RAB034",
+                             "RAB101", "RAB102"}
+        for code in forbidden_in_good:
+            if code in {"RAB001", "RAB101", "RAB102"}:
+                continue
+            assert code not in codes, f"Unexpected {code} found in {codes}"

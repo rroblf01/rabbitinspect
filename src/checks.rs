@@ -518,6 +518,10 @@ impl Checker for UnnecessaryElseChecker {
                         Stmt::Return(_) | Stmt::Raise(_) | Stmt::Break(_) | Stmt::Continue(_)
                     );
                     if is_terminal {
+                        // Skip if orelse is an elif chain (not a plain else)
+                        if i.orelse.len() == 1 && matches!(&i.orelse[0], Stmt::If(_)) {
+                            return;
+                        }
                         // Skip if RAB030 will handle this (orelse is single boolean return)
                         if i.orelse.len() == 1 {
                             if let Stmt::Return(r) = &i.orelse[0] {
@@ -1002,6 +1006,436 @@ impl Checker for ComplexityChecker {
                 self.complexity += 1;
             }
             Stmt::With(_) | Stmt::AsyncWith(_) => {
+                self.complexity += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        if let Expr::BoolOp(b) = expr {
+            if b.values.len() > 1 {
+                self.complexity += b.values.len() as u32 - 1;
+            }
+        }
+    }
+}
+
+// ── RAB011: Mutable default argument ─────────────────────────────────────
+
+pub struct MutableDefaultChecker;
+
+impl Checker for MutableDefaultChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let args = match stmt {
+            Stmt::FunctionDef(f) => &f.args,
+            Stmt::AsyncFunctionDef(f) => &f.args,
+            _ => return,
+        };
+        for arg in args.posonlyargs.iter()
+            .chain(args.args.iter())
+            .chain(args.kwonlyargs.iter())
+        {
+            if let Some(default) = &arg.default {
+                if matches!(default.as_ref(), Expr::List(_) | Expr::Dict(_) | Expr::Set(_)) {
+                    let range = default.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB011".to_string(),
+                        message: "Mutable default argument, use 'None' instead and initialize inside the function".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB012: Bare except ──────────────────────────────────────────────────
+
+pub struct BareExceptChecker;
+
+impl Checker for BareExceptChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::Try(t) = stmt {
+            for handler in &t.handlers {
+                let ExceptHandler::ExceptHandler(h) = handler;
+                if h.type_.is_none() && h.name.is_none() {
+                    let range = handler.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB012".to_string(),
+                        message: "Bare 'except:' catches all exceptions including SystemExit/KeyboardInterrupt, specify exception type".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB013: Bare except with pass ────────────────────────────────────────
+
+pub struct BareExceptPassChecker;
+
+impl Checker for BareExceptPassChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::Try(t) = stmt {
+            for handler in &t.handlers {
+                let ExceptHandler::ExceptHandler(h) = handler;
+                if h.type_.is_none() && h.name.is_none() && h.body.len() == 1 {
+                    if let Stmt::Pass(_) = &h.body[0] {
+                        let range = handler.range();
+                        let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                        let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                        findings.push(Finding {
+                            line, col, end_line, end_col,
+                            code: "RAB013".to_string(),
+                            message: "Bare 'except: pass' silently swallows all exceptions, at minimum log the error".to_string(),
+                            fix: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── RAB014: class Foo(object) ────────────────────────────────────────────
+
+pub struct ClassObjectChecker;
+
+impl Checker for ClassObjectChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::ClassDef(c) = stmt {
+            for base in &c.bases {
+                if matches!(base, Expr::Name(n) if n.id.as_str() == "object") {
+                    let range = base.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB014".to_string(),
+                        message: "Redundant 'object' base class in Python 3, use 'class Foo:' directly".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB016: .format() instead of f-string ────────────────────────────────
+
+pub struct FormatCallChecker;
+
+impl Checker for FormatCallChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Call(c) = expr {
+            if let Expr::Attribute(a) = &*c.func {
+                if a.attr.as_str() == "format" && !c.args.is_empty() {
+                    let range = c.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB016".to_string(),
+                        message: "Use f-string instead of '.format()' for better readability and performance".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB017: Function too long ────────────────────────────────────────────
+
+const MAX_FUNCTION_STMTS: u32 = 30;
+
+pub struct FunctionLengthChecker {
+    count: u32,
+    scope_stack: Vec<u32>,
+}
+
+impl FunctionLengthChecker {
+    pub fn new() -> Self {
+        Self { count: 0, scope_stack: Vec::new() }
+    }
+}
+
+impl Checker for FunctionLengthChecker {
+    fn enter_scope(&mut self) {
+        self.scope_stack.push(std::mem::replace(&mut self.count, 0));
+    }
+
+    fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        // Only report inside function scopes, not at module level
+        if self.count > MAX_FUNCTION_STMTS && self.scope_stack.len() > 1 {
+            findings.push(Finding {
+                line: 0, col: 0, end_line: 0, end_col: 0,
+                code: "RAB017".to_string(),
+                message: format!(
+                    "Function contains {} statements (threshold: {}), consider refactoring",
+                    self.count, MAX_FUNCTION_STMTS
+                ),
+                fix: None,
+            });
+        }
+        if let Some(parent) = self.scope_stack.pop() {
+            self.count = parent;
+        }
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        match stmt {
+            Stmt::FunctionDef(_) | Stmt::AsyncFunctionDef(_) | Stmt::ClassDef(_) => {}
+            _ => self.count += 1,
+        }
+    }
+}
+
+// ── RAB018: Too many parameters ──────────────────────────────────────────
+
+pub struct TooManyParamsChecker;
+
+impl Checker for TooManyParamsChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let (args, name) = match stmt {
+            Stmt::FunctionDef(f) => (&f.args, &f.name),
+            Stmt::AsyncFunctionDef(f) => (&f.args, &f.name),
+            _ => return,
+        };
+        let total = args.posonlyargs.len() + args.args.len() + args.kwonlyargs.len();
+        if total > 6 {
+            findings.push(Finding {
+                line: 0, col: 0, end_line: 0, end_col: 0,
+                code: "RAB018".to_string(),
+                message: format!(
+                    "Function '{}' has {} parameters (threshold: 6), consider refactoring",
+                    name, total
+                ),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB019: os.system() → subprocess.run() ───────────────────────────────
+
+pub struct OsSystemChecker;
+
+impl Checker for OsSystemChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Call(c) = expr {
+            if let Expr::Attribute(a) = &*c.func {
+                if a.attr.as_str() == "system" && matches!(&*a.value, Expr::Name(n) if n.id.as_str() == "os") {
+                    let range = c.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB019".to_string(),
+                        message: "Use 'subprocess.run()' instead of 'os.system()' for subprocess control".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB020: time.time() for benchmarking → time.perf_counter() ───────────
+
+pub struct TimeTimeChecker;
+
+impl Checker for TimeTimeChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Call(c) = expr {
+            if let Expr::Attribute(a) = &*c.func {
+                if a.attr.as_str() == "time" && matches!(&*a.value, Expr::Name(n) if n.id.as_str() == "time") {
+                    let range = c.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB020".to_string(),
+                        message: "Use 'time.perf_counter()' instead of 'time.time()' for benchmarking (higher resolution)".to_string(),
+                        fix: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB022: Public function missing return type hint ─────────────────────
+
+pub struct MissingReturnHintChecker;
+
+impl Checker for MissingReturnHintChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let (name, returns, range) = match stmt {
+            Stmt::FunctionDef(f) if !f.name.to_string().starts_with('_') => (&f.name, &f.returns, f.range()),
+            Stmt::AsyncFunctionDef(f) if !f.name.to_string().starts_with('_') => (&f.name, &f.returns, f.range()),
+            _ => return,
+        };
+        if returns.is_none() {
+            let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+            let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB022".to_string(),
+                message: format!("Public function '{}' is missing a return type hint", name),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB024: Deep comprehension nesting ───────────────────────────────────
+
+pub struct DeepComprehensionChecker;
+
+impl Checker for DeepComprehensionChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let generators = match expr {
+            Expr::ListComp(lc) => &lc.generators,
+            Expr::SetComp(sc) => &sc.generators,
+            Expr::DictComp(dc) => &dc.generators,
+            Expr::GeneratorExp(ge) => &ge.generators,
+            _ => return,
+        };
+        if generators.len() > 2 {
+            let range = expr.range();
+            let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+            let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB024".to_string(),
+                message: format!(
+                    "Deep comprehension with {} nested 'for' clauses, consider refactoring with helper loops",
+                    generators.len()
+                ),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB025: Long if-elif chain (> 3) ─────────────────────────────────────
+
+pub struct LongIfChainChecker;
+
+fn count_elif_chain(orelse: &[Stmt]) -> u32 {
+    if orelse.len() == 1 {
+        if let Stmt::If(inner) = &orelse[0] {
+            return 1 + count_elif_chain(&inner.orelse);
+        }
+    }
+    0
+}
+
+impl Checker for LongIfChainChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::If(i) = stmt {
+            let chain_len = 1 + count_elif_chain(&i.orelse);
+            if chain_len > 3 {
+                let range = i.range();
+                let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB025".to_string(),
+                    message: format!(
+                        "Long if-elif chain with {} branches, consider using a dict dispatch",
+                        chain_len
+                    ),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
+// ── RAB102: Cognitive complexity ─────────────────────────────────────────
+
+const COGNITIVE_THRESHOLD: u32 = 15;
+
+pub struct CognitiveComplexityChecker {
+    complexity: u32,
+    depth: u32,
+    scope_stack: Vec<(u32, u32)>,
+}
+
+impl CognitiveComplexityChecker {
+    pub fn new() -> Self {
+        Self { complexity: 1, depth: 0, scope_stack: Vec::new() }
+    }
+}
+
+impl Checker for CognitiveComplexityChecker {
+    fn enter_scope(&mut self) {
+        self.scope_stack.push((self.complexity, self.depth));
+        self.complexity = 1;
+        self.depth = 0;
+    }
+
+    fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        if self.complexity > COGNITIVE_THRESHOLD {
+            findings.push(Finding {
+                line: 0, col: 0, end_line: 0, end_col: 0,
+                code: "RAB102".to_string(),
+                message: format!(
+                    "Cognitive complexity is {} (threshold: {}), consider simplifying",
+                    self.complexity, COGNITIVE_THRESHOLD
+                ),
+                fix: None,
+            });
+        }
+        if let Some((c, d)) = self.scope_stack.pop() {
+            self.complexity = c;
+            self.depth = d;
+        }
+    }
+
+    fn enter_block(&mut self) {
+        self.depth += 1;
+    }
+
+    fn exit_block(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        match stmt {
+            Stmt::If(i) => {
+                self.complexity += 1 + self.depth;
+                for elif in &i.orelse {
+                    if let Stmt::If(_) = elif {
+                        self.complexity += 1 + self.depth;
+                    }
+                }
+            }
+            Stmt::For(_) | Stmt::AsyncFor(_) | Stmt::While(_) => {
+                self.complexity += 1 + self.depth;
+            }
+            Stmt::Try(t) => {
+                self.complexity += 1 + self.depth;
+                self.complexity += self.depth * t.handlers.len() as u32;
+            }
+            Stmt::With(_) | Stmt::AsyncWith(_) => {
+                self.complexity += 1 + self.depth;
+            }
+            Stmt::Match(m) => {
+                self.complexity += 1 + self.depth;
+                self.complexity += self.depth * m.cases.len() as u32;
+            }
+            Stmt::Assert(_) => {
                 self.complexity += 1;
             }
             _ => {}
