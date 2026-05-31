@@ -15,15 +15,6 @@ requires-python = ">=3.10"
 dependencies = [
     'tomli; python_version < "3.11"',
 ]
-
-[project.scripts]
-rabbitinspect = "rabbitinspect.__main__:main"
-
-[project.urls]
-Homepage = "https://github.com/ricardorobles/rabbitinspect"
-Repository = "https://github.com/ricardorobles/rabbitinspect"
-Changelog = "https://github.com/ricardorobles/rabbitinspect/blob/main/CHANGELOG.md"
-
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -37,6 +28,14 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Software Development :: Quality Assurance",
 ]
+
+[project.scripts]
+rabbitinspect = "rabbitinspect.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/rroblf01/rabbitinspect"
+Repository = "https://github.com/rroblf01/rabbitinspect"
+Changelog = "https://github.com/rroblf01/rabbitinspect/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 module-name = "rabbitinspect._core"
