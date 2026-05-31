@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 rustpython-parser = "0.4"
 rustpython-ast = "0.4"
+rustc-hash = "2.1"
 
 [profile.release]
 opt-level = 3

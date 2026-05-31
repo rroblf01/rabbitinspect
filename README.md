@@ -67,9 +67,19 @@ fixed = apply_fixes(source, fixes)
 | **RAB002** | `x == None` instead of `x is None` | `is` avoids calling `__eq__` and is constant-time; `None` is a singleton | ✅ |
 | **RAB003** | `len(x) == 0` instead of `not x` | `not x` is O(1) for most types and uses the existing truthiness protocol | ✅ |
 | **RAB004** | `any([...])` / `all([...])` with list comprehension | Generator `(...)` avoids allocating the entire list in memory before iterating | ✅ |
-| **RAB005** | `for k in d.keys()` instead of `for k in d` | Iterating the dict directly avoids creating a `.keys()` view object | ❌ (warning only) |
+| **RAB005** | `for k in d.keys()` instead of `for k in d` | Iterating the dict directly avoids creating a `.keys()` view object | ✅ |
 | **RAB006** | `type(x) == T` instead of `isinstance(x, T)` | `isinstance` handles inheritance and is the idiomatic Python way | ✅ |
-| **RAB007** | Unnecessary `else` after `return`/`raise`/`break`/`continue` | Removing dead `else` reduces indentation and clarifies control flow | ❌ (warning only) |
+| **RAB007** | Unnecessary `else` after `return`/`raise`/`break`/`continue` | Removing dead `else` reduces indentation and clarifies control flow | ✅ |
+| **RAB008** | `for i in range(len(x))` instead of `enumerate(x)` | `enumerate` avoids the double lookup `x[i]` and is more idiomatic | ❌ (warning only) |
+| **RAB009** | String concatenation in a loop (`s += str(x)`) | `str.join()` allocates once instead of O(n) intermediate strings | ❌ (warning only) |
+| **RAB010** | `set(list(x))` — unnecessary `list()` call | Skips creating an intermediate list before building the set | ❌ (warning only) |
+| **RAB015** | `k in d.keys()` instead of `k in d` | `in d` is faster and avoids creating a `.keys()` view | ✅ |
+| **RAB023** | Redundant `.call()` method call | Call the object directly instead of through `.call()` | ❌ (warning only) |
+| **RAB029** | `x == True` / `x == False` instead of `x` / `not x` | Direct boolean context avoids the comparison overhead | ✅ |
+| **RAB030** | `if cond: return True else: return False` → `return cond` | Direct return is shorter and avoids unnecessary branching | ✅ |
+| **RAB032** | `bool(x)` inside a boolean context | `bool()` is redundant; the value is already truthy/falsy | ✅ |
+| **RAB034** | `assert True` / `assert False` — always no-op or always failing | `assert True` is dead code; `assert False` should use proper error handling | ✅ |
+| **RAB101** | Cyclomatic complexity > 10 — too many decision paths | High complexity makes code hard to test and maintain; suggests refactoring | ❌ (warning only) |
 
 ---
 
@@ -88,6 +98,10 @@ Parsing and analyzing Python source is a CPU-bound operation. Rust's zero-cost a
 | `len(x) == 0` | Calls `x.__len__()`, may be O(n) for some types; requires function call | `not x` — uses `__bool__` / `__len__` protocol directly, often O(1) |
 | `for k in d.keys()` | Creates a `dict_keys` view object (small overhead) | `for k in d:` — iterates the dict directly |
 | `type(x) == T` | Ignores subclass relationships; fails for derived types | `isinstance(x, T)` — correct for inheritance |
+| `for i in range(len(x))` | Double lookup `x[i]` and Python-level function call overhead | `for i, item in enumerate(x)` — single iteration |
+| `s += str(x)` in loop | Allocates a new string on every iteration, O(n²) total | `"".join(str(x) for x in items)` — single allocation |
+| `set(list(x))` | Creates an intermediate list before building the set | `set(x)` — set builds directly from iterator |
+| `k in d.keys()` | Creates a `dict_keys` view for the membership test | `k in d` — direct hash lookup, no view needed |
 
 ---
 
