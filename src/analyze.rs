@@ -5,7 +5,12 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB001", "RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
     "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013", "RAB014",
     "RAB015", "RAB016", "RAB017", "RAB018", "RAB019", "RAB020", "RAB022",
-    "RAB023", "RAB024", "RAB025", "RAB029", "RAB030", "RAB032", "RAB034",
+    "RAB023", "RAB024", "RAB025", "RAB026",
+    "RAB029", "RAB030", "RAB031", "RAB032",
+    "RAB034", "RAB035", "RAB036", "RAB037", "RAB038", "RAB039",
+    "RAB040", "RAB041", "RAB042", "RAB043", "RAB044", "RAB045",
+    "RAB046", "RAB047", "RAB048", "RAB049",
+    "RAB053",
     "RAB101", "RAB102",
 ];
 
@@ -43,6 +48,16 @@ pub fn text_size_to_usize(ts: TextSize) -> usize {
 pub fn pos_to_line_col(start: TextSize, line_starts: &[usize]) -> (usize, usize) {
     let byte = text_size_to_usize(start);
     byte_to_line_col(byte, line_starts)
+}
+
+pub fn iter_fn_args(args: &Arguments) -> impl Iterator<Item = &ArgWithDefault> {
+    args.posonlyargs.iter()
+        .chain(args.args.iter())
+        .chain(args.kwonlyargs.iter())
+}
+
+pub fn count_fn_args(args: &Arguments) -> usize {
+    args.posonlyargs.len() + args.args.len() + args.kwonlyargs.len()
 }
 
 fn compute_line_starts(source: &str) -> Vec<usize> {
@@ -118,6 +133,24 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut deep_comp = crate::checks::DeepComprehensionChecker;
     let mut long_if = crate::checks::LongIfChainChecker;
     let mut cognitive = crate::checks::CognitiveComplexityChecker::new();
+    let mut sorted_list = crate::checks::SortedListChecker;
+    let mut dict_get = crate::checks::DictGetChecker;
+    let mut slice_copy = crate::checks::SliceCopyChecker;
+    let mut native_generic = crate::checks::NativeGenericChecker;
+    let mut manual_list = crate::checks::ManualListChecker::new();
+    let mut open_ctx = crate::checks::OpenContextChecker;
+    let mut sorted_idx0 = crate::checks::SortedIndex0Checker;
+    let mut sorted_idxn1 = crate::checks::SortedIndexNeg1Checker;
+    let mut not_is_none = crate::checks::NotIsNoneChecker;
+    let mut aug_assign = crate::checks::AugmentedAssignChecker;
+    let mut is_true = crate::checks::IsTrueChecker;
+    let mut power_opt = crate::checks::PowerOptChecker;
+    let mut map_lambda = crate::checks::MapLambdaChecker;
+    let mut list_to_set = crate::checks::ListToSetChecker;
+    let mut dataclass_slots = crate::checks::DataclassSlotsChecker;
+    let mut re_compile = crate::checks::ReCompileChecker::new();
+    let mut readlines = crate::checks::ReadlinesChecker;
+    let mut type_union = crate::checks::TypeUnionChecker;
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -150,6 +183,24 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut deep_comp,
         &mut long_if,
         &mut cognitive,
+        &mut sorted_list,
+        &mut dict_get,
+        &mut slice_copy,
+        &mut native_generic,
+        &mut manual_list,
+        &mut open_ctx,
+        &mut sorted_idx0,
+        &mut sorted_idxn1,
+        &mut not_is_none,
+        &mut aug_assign,
+        &mut is_true,
+        &mut power_opt,
+        &mut map_lambda,
+        &mut list_to_set,
+        &mut dataclass_slots,
+        &mut re_compile,
+        &mut readlines,
+        &mut type_union,
     ];
 
     for c in checkers.iter_mut() {
@@ -240,6 +291,7 @@ fn walk_stmts(
             }
             Stmt::AnnAssign(a) => {
                 walk_expr(&a.target, source, line_starts, checkers, findings);
+                walk_expr(&a.annotation, source, line_starts, checkers, findings);
                 walk_expr_opt(a.value.as_deref(), source, line_starts, checkers, findings);
             }
             Stmt::For(f) => {

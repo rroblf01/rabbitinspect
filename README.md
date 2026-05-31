@@ -20,13 +20,13 @@ The package ships pre-compiled wheels — no Rust toolchain required.
 
 ```bash
 # Check a single file
-rabbitinspect check file.py
+rabbitinspect file.py
 
 # Check an entire directory
-rabbitinspect check src/
+rabbitinspect src/
 
 # Auto-fix detected issues
-rabbitinspect check file.py --fix
+rabbitinspect file.py --fix
 ```
 
 Output (ruff-style):
@@ -87,10 +87,23 @@ fixed = apply_fixes(source, fixes)
 | **RAB023** | Redundant `.call()` method call | Call the object directly instead of through `.call()` | ❌ (warning only) |
 | **RAB024** | Deep comprehension (> 2 nested `for` clauses) | Deep comprehensions are hard to read; consider helper loops | ❌ (warning only) |
 | **RAB025** | Long if-elif chain (> 3 branches) | Long chains are hard to maintain; consider dict dispatch | ❌ (warning only) |
+| **RAB026** | `sorted(list(x))` / `reversed(tuple(x))` — redundant collection | The inner `list()`/`tuple()` call creates an unnecessary intermediate collection | ✅ |
 | **RAB029** | `x == True` / `x == False` instead of `x` / `not x` | Direct boolean context avoids the comparison overhead | ✅ |
 | **RAB030** | `if cond: return True else: return False` → `return cond` | Direct return is shorter and avoids unnecessary branching | ✅ |
+| **RAB031** | `if k in d: return d[k]` → `d.get(k)` | Avoids double dict lookup, more concise | ✅ |
 | **RAB032** | `bool(x)` inside a boolean context | `bool()` is redundant; the value is already truthy/falsy | ✅ |
 | **RAB034** | `assert True` / `assert False` — always no-op or always failing | `assert True` is dead code; `assert False` should use proper error handling | ✅ |
+| **RAB035** | `x[:]` → `x.copy()` for list copies | `.copy()` is more explicit about intent | ✅ |
+| **RAB036** | `x**2` / `x**3` / `math.pow(x, 2/3)` → `x * x` / `x * x * x` | Multiplication is faster than exponentiation for small integer exponents | ✅ |
+| **RAB037** | `list(map(lambda, ...))` / `list(filter(lambda, ...))` | Comprehension is faster and more readable than `lambda` | ✅ |
+| **RAB038** | `x in [const, ...]` / `x not in (const, ...)` → `x in {const, ...}` | Set membership is O(1); list/tuple is O(n) | ✅ |
+| **RAB039** | `List[X]` / `Dict[K,V]` → `list[X]` / `dict[K,V]` | Use built-in generic types available since Python 3.9; no typing import needed | ✅ |
+| **RAB040** | `@dataclass` without `slots=True` | `slots=True` reduces memory usage and speeds up attribute access | ✅ |
+| **RAB041** | `re.compile()` inside a function | Regex is recompiled on every call; move to module level | ❌ (warning only) |
+| **RAB042** | `for line in f.readlines()` → `for line in f` | `.readlines()` loads the entire file into memory; iterating the file object reads line by line | ✅ |
+| **RAB043** | Manual `for` loop with `.append()` instead of comprehension | Comprehension is faster and more idiomatic | ❌ (warning only) |
+| **RAB044** | `Optional[X]` / `Union[A, B]` → `X \| None` / `A \| B` | Union syntax is more concise and available since Python 3.10 | ✅ |
+| **RAB045** | `open()` without context manager (`with`) | File handles may leak if not closed explicitly; `with` guarantees cleanup | ❌ (warning only) |
 | **RAB101** | Cyclomatic complexity > 10 — too many decision paths | High complexity makes code hard to test and maintain; suggests refactoring | ❌ (warning only) |
 | **RAB102** | Cognitive complexity > 15 — deep nesting + decision points | Measures how hard code is to understand; suggests refactoring | ❌ (warning only) |
 
@@ -115,6 +128,13 @@ Parsing and analyzing Python source is a CPU-bound operation. Rust's zero-cost a
 | `s += str(x)` in loop | Allocates a new string on every iteration, O(n²) total | `"".join(str(x) for x in items)` — single allocation |
 | `set(list(x))` | Creates an intermediate list before building the set | `set(x)` — set builds directly from iterator |
 | `k in d.keys()` | Creates a `dict_keys` view for the membership test | `k in d` — direct hash lookup, no view needed |
+| `sorted(list(x))` | Creates an intermediate list before sorting | `sorted(x)` — sorts the iterable directly |
+| `if k in d: return d[k]` | Two dict lookups (one for `in`, one for `[]`) | `return d.get(k)` — single hash lookup |
+| `x[:]` for list copy | Slice syntax creates a full copy but intent is unclear | `x.copy()` — explicit copy, same performance |
+| `List[int]` / `Dict[str, int]` | Requires import from `typing` | `list[int]` / `dict[str, int]` — no import needed, Python 3.9+ |
+| `for line in f.readlines()` | Loads entire file into memory as a list | `for line in f` — reads line by line, O(1) memory |
+| Manual `for` loop with `.append()` | Function call overhead per element; verbose | List comprehension — single expression, no function call overhead |
+| `open()` without `with` | File handle leaks if not explicitly closed | `with open(...) as f:` — automatic cleanup even on exceptions |
 
 ---
 

@@ -300,7 +300,7 @@ class TestRAB029BoolComparison:
         assert "not" not in f["fix"]["replacement"]
 
     def test_is_true_no_warning(self):
-        assert_no_findings("if x is True: pass")
+        assert_no_findings("if x is True: pass", ignore_codes={"RAB001", "RAB053"})
 
     def test_no_constant_side(self):
         assert_no_findings("if x == 1: pass")
@@ -718,7 +718,10 @@ class TestEndToEndAll:
                      "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013",
                      "RAB014", "RAB015", "RAB016", "RAB017", "RAB018", "RAB019",
                      "RAB020", "RAB022", "RAB023", "RAB024", "RAB025",
-                     "RAB029", "RAB030", "RAB032", "RAB034",
+                     "RAB026", "RAB029", "RAB030", "RAB031", "RAB032",
+                     "RAB034", "RAB035", "RAB036", "RAB037", "RAB038",
+                     "RAB039", "RAB040", "RAB041", "RAB042",
+                     "RAB043", "RAB044", "RAB045",
                      "RAB101", "RAB102"}
         for code in all_codes:
             assert code in codes, f"Expected {code} not found in {codes}"
@@ -732,9 +735,472 @@ class TestEndToEndAll:
                              "RAB008", "RAB009", "RAB010", "RAB011", "RAB012", "RAB013",
                              "RAB014", "RAB015", "RAB016", "RAB017", "RAB018", "RAB019",
                              "RAB020", "RAB022", "RAB023", "RAB024", "RAB025",
-                             "RAB029", "RAB030", "RAB032", "RAB034",
+                             "RAB026", "RAB029", "RAB030", "RAB031", "RAB032",
+                             "RAB034", "RAB035", "RAB036", "RAB037", "RAB038",
+                             "RAB039", "RAB040", "RAB041", "RAB042",
+                             "RAB043", "RAB044", "RAB045",
                              "RAB101", "RAB102"}
         for code in forbidden_in_good:
             if code in {"RAB001", "RAB101", "RAB102"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
+
+
+class TestRAB036PowerOpt:
+    def test_square_binop(self):
+        findings = check_code("def f(x): return x**2", {"RAB036"})
+        f = finding_by_code(findings, "RAB036")
+        assert f["fix"]["replacement"] == "x * x"
+
+    def test_cube_binop(self):
+        findings = check_code("def f(x): return x**3", {"RAB036"})
+        f = finding_by_code(findings, "RAB036")
+        assert f["fix"]["replacement"] == "x * x * x"
+
+    def test_mathpow_square(self):
+        findings = check_code("import math; math.pow(x, 2)", {"RAB036"})
+        f = finding_by_code(findings, "RAB036")
+        assert "x * x" in f["fix"]["replacement"]
+
+    def test_mathpow_cube(self):
+        findings = check_code("import math; math.pow(y, 3)", {"RAB036"})
+        f = finding_by_code(findings, "RAB036")
+        assert "y * y * y" in f["fix"]["replacement"]
+
+    def test_no_warning_higher_exp(self):
+        assert_no_findings("def f(x) -> int: return x**10")
+
+    def test_no_warning_addition(self):
+        assert_no_findings("def f(x) -> int: return x + x")
+
+
+class TestRAB037MapLambda:
+    def test_map_lambda(self):
+        findings = check_code("list(map(lambda x: x+1, items))", {"RAB037"})
+        f = finding_by_code(findings, "RAB037")
+        assert "x+1 for x in items" in f["fix"]["replacement"]
+
+    def test_filter_lambda(self):
+        findings = check_code("list(filter(lambda x: x>0, items))", {"RAB037"})
+        f = finding_by_code(findings, "RAB037")
+        assert "x for x in items if x>0" in f["fix"]["replacement"]
+
+    def test_no_warning_list_comp(self):
+        assert_no_findings("result = [x+1 for x in items]")
+
+    def test_no_warning_map_named(self):
+        assert_no_findings("result = map(str, items)")
+
+
+class TestRAB038ListToSet:
+    def test_list_in(self):
+        findings = check_code("x in [1, 2, 3]", {"RAB038"})
+        f = finding_by_code(findings, "RAB038")
+        assert f["fix"]["replacement"] == "{1, 2, 3}"
+
+    def test_tuple_not_in(self):
+        findings = check_code("x not in (1, 2)", {"RAB038"})
+        f = finding_by_code(findings, "RAB038")
+        assert f["fix"]["replacement"] == "{1, 2}"
+
+    def test_no_warning_non_const_list(self):
+        assert_no_findings("x in [a, b, c]")
+
+    def test_no_warning_dict_access(self):
+        assert_no_findings("x in y")
+
+
+class TestRAB040DataclassSlots:
+    def test_dataclass_no_slots(self):
+        check_code("""
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int = 0
+""", {"RAB040"})
+
+    def test_dataclass_with_slots(self):
+        assert_no_findings("""
+from dataclasses import dataclass
+
+@dataclass(slots=True)
+class Point:
+    x: int = 0
+""")
+
+    def test_no_warning_regular_class(self):
+        assert_no_findings("class Foo: pass")
+
+    def test_fix_adds_slots(self):
+        findings = analyze_code("""
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int = 0
+""")
+        f = finding_by_code(findings, "RAB040")
+        assert f["fix"]["replacement"] == "dataclass(slots=True)"
+
+
+class TestRAB041ReCompile:
+    def test_recompile_in_function(self):
+        check_code("""
+import re
+
+def f():
+    return re.compile('[a-z]')
+""", {"RAB041"})
+
+    def test_no_warning_module_level(self):
+        assert_no_findings("""
+import re
+pattern = re.compile('[a-z]')
+""")
+
+    def test_no_warning_no_compile(self):
+        assert_no_findings("""
+import re
+
+def f() -> None:
+    return re.match('[a-z]', 'a')
+""")
+
+
+class TestRAB042Readlines:
+    def test_for_readlines(self):
+        findings = check_code("for line in f.readlines(): pass", {"RAB042"})
+        f = finding_by_code(findings, "RAB042")
+        assert f["fix"]["replacement"] == ""
+
+    def test_no_warning_for_direct(self):
+        assert_no_findings("for line in f: pass")
+
+    def test_no_warning_method_call(self):
+        assert_no_findings("data = f.read()")
+
+
+class TestRAB044TypeUnion:
+    def test_optional_in_function_return(self):
+        check_code("""
+from typing import Optional
+def f() -> Optional[int]:
+    return None
+""", {"RAB044"})
+
+    def test_optional_in_annotation(self):
+        check_code("""
+from typing import Optional
+def f(x: Optional[int]) -> None:
+    pass
+""", {"RAB044"})
+
+    def test_union_in_annotation(self):
+        check_code("""
+from typing import Union
+x: Union[int, str] = 1
+""", {"RAB044"})
+
+    def test_no_warning_str_annotation(self):
+        assert_no_findings('def f(x: int) -> None: pass')
+
+    def test_fix_optional(self):
+        findings = analyze_code("""
+from typing import Optional
+x: Optional[int] = None
+""")
+        f = finding_by_code(findings, "RAB044")
+        assert f["fix"]["replacement"] == "int | None"
+
+    def test_fix_union(self):
+        findings = analyze_code("""
+from typing import Union
+x: Union[int, str] = 1
+""")
+        f = finding_by_code(findings, "RAB044")
+        assert f["fix"]["replacement"] == "int | str"
+
+
+class TestRAB026SortedList:
+    def test_sorted_list(self):
+        check_code("sorted(list(x))", {"RAB026"})
+
+    def test_sorted_tuple(self):
+        check_code("sorted(tuple(x))", {"RAB026"})
+
+    def test_reversed_list(self):
+        check_code("reversed(list(x))", {"RAB026"})
+
+    def test_no_warning_sorted_direct(self):
+        assert_no_findings("sorted(x)")
+
+    def test_fix_removes_list(self):
+        findings = analyze_code("sorted(list(x))")
+        f = finding_by_code(findings, "RAB026")
+        assert f["fix"]["replacement"] == "sorted(x)"
+
+    def test_fix_removes_tuple(self):
+        findings = analyze_code("reversed(tuple(items))")
+        f = finding_by_code(findings, "RAB026")
+        assert f["fix"]["replacement"] == "reversed(items)"
+
+
+class TestRAB031DictGet:
+    def test_dict_get_return(self):
+        check_code("""
+def f(d, k):
+    if k in d:
+        return d[k]
+""", {"RAB031"})
+
+    def test_dict_get_assign(self):
+        check_code("""
+def f(d, k):
+    if k in d:
+        v = d[k]
+""", {"RAB031"})
+
+    def test_no_warning_different_dict(self):
+        assert_no_findings("""
+def f(d, k):
+    if k in d:
+        return d2[k]
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_fix_get_replacement(self):
+        findings = analyze_code("""
+def f(d, k):
+    if k in d:
+        return d[k]
+""")
+        f = finding_by_code(findings, "RAB031")
+        assert f["fix"]["replacement"] == "d.get(k)"
+
+
+class TestRAB035SliceCopy:
+    def test_slice_copy(self):
+        check_code("x[:]", {"RAB035"})
+
+    def test_no_warning_non_empty_slice(self):
+        assert_no_findings("x[1:]", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_subscript(self):
+        assert_no_findings("x[0]", ignore_codes={"RAB001", "RAB022"})
+
+    def test_fix_copy(self):
+        findings = analyze_code("x[:]")
+        f = finding_by_code(findings, "RAB035")
+        assert f["fix"]["replacement"] == ".copy()"
+
+
+class TestRAB039NativeGeneric:
+    def test_list_generic(self):
+        check_code("x: List[int] = []", {"RAB039"})
+
+    def test_dict_generic(self):
+        check_code("x: Dict[str, int] = {}", {"RAB039"})
+
+    def test_tuple_generic(self):
+        check_code("x: Tuple[int, ...] = ()", {"RAB039"})
+
+    def test_set_generic(self):
+        check_code("x: Set[str] = set()", {"RAB039"})
+
+    def test_frozenset_generic(self):
+        check_code("x: FrozenSet[int] = frozenset()", {"RAB039"})
+
+    def test_type_generic(self):
+        check_code("x: Type[Base] = Base", {"RAB039"})
+
+    def test_no_warning_non_generic(self):
+        assert_no_findings("x: int = 1", ignore_codes={"RAB001"})
+
+    def test_fix_list(self):
+        findings = analyze_code("x: List[int] = []")
+        f = finding_by_code(findings, "RAB039")
+        assert f["fix"]["replacement"] == "list"
+
+    def test_fix_dict(self):
+        findings = analyze_code("x: Dict[str, int] = {}")
+        f = finding_by_code(findings, "RAB039")
+        assert f["fix"]["replacement"] == "dict"
+
+
+class TestRAB043ManualList:
+    def test_manual_list_append(self):
+        check_code("""
+def f(items):
+    result = []
+    for x in items:
+        result.append(x)
+""", {"RAB043"})
+
+    def test_no_warning_comprehension(self):
+        assert_no_findings("""
+def f(items):
+    result = [x for x in items]
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_no_append(self):
+        assert_no_findings("""
+def f(items):
+    result = []
+    for x in items:
+        print(x)
+""", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB045OpenContext:
+    def test_open_expr(self):
+        check_code("open('file')", {"RAB045"})
+
+    def test_open_assign(self):
+        check_code("f = open('file')", {"RAB045"})
+
+    def test_no_warning_with_open(self):
+        assert_no_findings("""
+def f():
+    with open('file') as fh:
+        pass
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_other_call(self):
+        assert_no_findings("read('file')", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB046SortedIndex0:
+    def test_sorted_index0(self):
+        findings = check_code("x = sorted(y)[0]", {"RAB046"})
+        f = finding_by_code(findings, "RAB046")
+        assert f["fix"]["replacement"] == "min(y)"
+
+    def test_sorted_index0_with_key(self):
+        findings = check_code("x = sorted(y, key=len)[0]", {"RAB046"})
+        f = finding_by_code(findings, "RAB046")
+        assert f["fix"]["replacement"] == "min(y, key=len)"
+
+    def test_sorted_reverse_no_warning(self):
+        assert_no_findings("x = sorted(y, reverse=True)[0]", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_regular_subscript(self):
+        assert_no_findings("x = y[0]", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB047SortedIndexNeg1:
+    def test_sorted_index_neg1(self):
+        findings = check_code("x = sorted(y)[-1]", {"RAB047"})
+        f = finding_by_code(findings, "RAB047")
+        assert f["fix"]["replacement"] == "max(y)"
+
+    def test_sorted_index_neg1_with_key(self):
+        findings = check_code("x = sorted(y, key=len)[-1]", {"RAB047"})
+        f = finding_by_code(findings, "RAB047")
+        assert f["fix"]["replacement"] == "max(y, key=len)"
+
+    def test_sorted_reverse_no_warning(self):
+        assert_no_findings("x = sorted(y, reverse=True)[-1]", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB048NotIsNone:
+    def test_not_is_none(self):
+        findings = check_code("if not x is None: pass", {"RAB048"})
+        f = finding_by_code(findings, "RAB048")
+        assert f["fix"]["replacement"] == "x is not None"
+
+    def test_not_is_none_complex(self):
+        findings = check_code("if not foo.bar is None: pass", {"RAB048"})
+        f = finding_by_code(findings, "RAB048")
+        assert f["fix"]["replacement"] == "foo.bar is not None"
+
+    def test_no_warning_is_none(self):
+        assert_no_findings("if x is None: pass")
+
+    def test_no_warning_is_not_none(self):
+        assert_no_findings("if x is not None: pass")
+
+
+class TestRAB049AugmentedAssign:
+    def test_add(self):
+        findings = check_code("x = x + 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x += 1"
+
+    def test_sub(self):
+        findings = check_code("x = x - 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x -= 1"
+
+    def test_mul(self):
+        findings = check_code("x = x * 2", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x *= 2"
+
+    def test_div(self):
+        findings = check_code("x = x / 2", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x /= 2"
+
+    def test_floor_div(self):
+        findings = check_code("x = x // 2", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x //= 2"
+
+    def test_mod(self):
+        findings = check_code("x = x % 2", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x %= 2"
+
+    def test_pow(self):
+        findings = check_code("x = x ** 2", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x **= 2"
+
+    def test_bit_and(self):
+        findings = check_code("x = x & 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x &= 1"
+
+    def test_bit_or(self):
+        findings = check_code("x = x | 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x |= 1"
+
+    def test_bit_xor(self):
+        findings = check_code("x = x ^ 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x ^= 1"
+
+    def test_lshift(self):
+        findings = check_code("x = x << 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x <<= 1"
+
+    def test_rshift(self):
+        findings = check_code("x = x >> 1", {"RAB049"})
+        f = finding_by_code(findings, "RAB049")
+        assert f["fix"]["replacement"] == "x >>= 1"
+
+    def test_no_warning_different_var(self):
+        assert_no_findings("x = y + 1", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_multi_target(self):
+        assert_no_findings("x = y = z + 1", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB053IsTrue:
+    def test_is_true(self):
+        findings = check_code("if x is True: pass", {"RAB053"})
+        f = finding_by_code(findings, "RAB053")
+        assert f["fix"]["replacement"] == "x"
+
+    def test_is_false(self):
+        findings = check_code("if x is False: pass", {"RAB053"})
+        f = finding_by_code(findings, "RAB053")
+        assert f["fix"]["replacement"] == "not x"
+
+    def test_no_warning_is_none(self):
+        assert_no_findings("if x is None: pass")
+
+    def test_no_warning_equality(self):
+        assert_no_findings("if x == 1: pass")

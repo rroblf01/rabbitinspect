@@ -11,7 +11,7 @@ authors = [
     { name = "Ricardo Robles", email = "ricardo.r.f@hotmail.com" }
 ]
 license = "MIT"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]

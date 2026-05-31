@@ -226,3 +226,132 @@ def bad_high_cognitive(a, b, c, d):
         except TypeError:
             pass
     return a
+
+
+def bad_power_opt(x):
+    return x**2
+
+
+import math
+
+
+def bad_math_pow(x):
+    return math.pow(x, 3)
+
+
+def bad_map_lambda(items):
+    return list(map(lambda x: x + 1, items))
+
+
+def bad_filter_lambda(items):
+    return list(filter(lambda x: x > 0, items))
+
+
+def bad_list_membership(x):
+    return x in [1, 2, 3]
+
+
+def bad_tuple_membership(x):
+    return x not in (1, 2)
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class BadDataclass:
+    x: int = 0
+
+
+import re
+
+
+def bad_re_compile():
+    return re.compile("[a-z]")
+
+
+def bad_readlines():
+    f = open("file.txt")
+    for line in f.readlines():
+        print(line)
+
+
+from typing import Optional
+
+
+def bad_optional(x: Optional[int]) -> Optional[str]:
+    return None
+
+
+from typing import Union
+
+
+bad_union: Union[int, str] = 1
+
+
+def bad_sorted_list(items):
+    return sorted(list(items))
+
+
+def bad_reversed_tuple(items):
+    return reversed(tuple(items))
+
+
+def bad_dict_get(d, k):
+    if k in d:
+        return d[k]
+
+
+def bad_slice_copy(items):
+    return items[:]
+
+
+from typing import List, Dict, Tuple, Set
+
+
+def bad_list_annotation(x: List[int]) -> None:
+    pass
+
+
+x_bad_dict_annotation: Dict[str, int] = {}
+
+
+def bad_manual_list(items):
+    result = []
+    for x in items:
+        result.append(x)
+    return result
+
+
+bad_open_expr = open("/dev/null")
+
+
+def bad_sorted_index0(items):
+    return sorted(items)[0]
+
+
+def bad_sorted_index_neg1(items):
+    return sorted(items)[-1]
+
+
+def bad_not_is_none(x):
+    if not x is None:
+        return True
+    return False
+
+
+def bad_augmented_assign(x):
+    x = x + 1
+    return x
+
+
+def bad_is_true(x):
+    if x is True:
+        return 1
+    return 0
+
+
+def bad_is_false(x):
+    if x is False:
+        return 1
+    return 0

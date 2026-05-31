@@ -137,3 +137,112 @@ def good_assert_expr(x) -> None:
 def good_simple_function(a) -> None:
     if a > 0:
         print("positive")
+
+
+def good_power_opt(x) -> int:
+    return x * x
+
+
+import math
+
+
+def good_pow_literal(x) -> int:
+    return math.pow(x, 5)
+
+
+def good_map_comp(items) -> list:
+    return [x + 1 for x in items]
+
+
+def good_filter_comp(items) -> list:
+    return [x for x in items if x > 0]
+
+
+def good_set_membership(x) -> bool:
+    return x in {1, 2, 3}
+
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class GoodDataclass:
+    x: int = 0
+
+
+import re
+
+pattern = re.compile("[a-z]")
+
+
+def good_use_pattern(s) -> bool:
+    return pattern.match(s) is not None
+
+
+def good_readlines() -> None:
+    with open("file.txt") as f:
+        for line in f:
+            print(line)
+
+
+def good_int_annotation(x: int) -> None:
+    pass
+
+
+def good_sorted_direct(items) -> list:
+    return sorted(items)
+
+
+def good_dict_get(d, k) -> None:
+    d.get(k)
+
+
+def good_slice_copy(items) -> list:
+    return items.copy()
+
+
+from typing import List, Dict
+
+
+def good_list_annotation(x: list[int]) -> None:
+    pass
+
+
+def good_comprehension(items) -> list:
+    return [x for x in items]
+
+
+def good_with_open() -> None:
+    with open("file.txt") as f:
+        print(f.read())
+
+
+def good_sorted_index0(items) -> int:
+    return min(items)
+
+
+def good_sorted_index_neg1(items) -> int:
+    return max(items)
+
+
+def good_not_is_none(x) -> bool:
+    if x is not None:
+        return True
+    return False
+
+
+def good_augmented_assign(x) -> int:
+    x += 1
+    return x
+
+
+def good_is_true(x) -> int:
+    if x:
+        return 1
+    return 0
+
+
+def good_is_false(x) -> int:
+    if not x:
+        return 1
+    return 0

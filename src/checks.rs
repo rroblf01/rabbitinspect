@@ -1,4 +1,4 @@
-use crate::analyze::{byte_to_line_col, text_size_to_usize, Checker, Finding, Fix};
+use crate::analyze::{byte_to_line_col, count_fn_args, iter_fn_args, text_size_to_usize, Checker, Finding, Fix};
 use rustc_hash::FxHashSet;
 use rustpython_ast::*;
 
@@ -82,13 +82,7 @@ impl Checker for UnusedVarsChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
         match stmt {
             Stmt::FunctionDef(f) => {
-                for arg in &f.args.posonlyargs {
-                    self.add_arg(&arg.def.arg);
-                }
-                for arg in &f.args.args {
-                    self.add_arg(&arg.def.arg);
-                }
-                for arg in &f.args.kwonlyargs {
+                for arg in iter_fn_args(&f.args) {
                     self.add_arg(&arg.def.arg);
                 }
                 if let Some(vararg) = &f.args.vararg {
@@ -99,13 +93,7 @@ impl Checker for UnusedVarsChecker {
                 }
             }
             Stmt::AsyncFunctionDef(f) => {
-                for arg in &f.args.posonlyargs {
-                    self.add_arg(&arg.def.arg);
-                }
-                for arg in &f.args.args {
-                    self.add_arg(&arg.def.arg);
-                }
-                for arg in &f.args.kwonlyargs {
+                for arg in iter_fn_args(&f.args) {
                     self.add_arg(&arg.def.arg);
                 }
                 if let Some(vararg) = &f.args.vararg {
@@ -1032,10 +1020,7 @@ impl Checker for MutableDefaultChecker {
             Stmt::AsyncFunctionDef(f) => &f.args,
             _ => return,
         };
-        for arg in args.posonlyargs.iter()
-            .chain(args.args.iter())
-            .chain(args.kwonlyargs.iter())
-        {
+        for arg in iter_fn_args(args) {
             if let Some(default) = &arg.default {
                 if matches!(default.as_ref(), Expr::List(_) | Expr::Dict(_) | Expr::Set(_)) {
                     let range = default.range();
@@ -1210,7 +1195,7 @@ impl Checker for TooManyParamsChecker {
             Stmt::AsyncFunctionDef(f) => (&f.args, &f.name),
             _ => return,
         };
-        let total = args.posonlyargs.len() + args.args.len() + args.kwonlyargs.len();
+        let total = count_fn_args(args);
         if total > 6 {
             findings.push(Finding {
                 line: 0, col: 0, end_line: 0, end_col: 0,
@@ -1446,6 +1431,755 @@ impl Checker for CognitiveComplexityChecker {
         if let Expr::BoolOp(b) = expr {
             if b.values.len() > 1 {
                 self.complexity += b.values.len() as u32 - 1;
+            }
+        }
+    }
+}
+
+// ── RAB036: x ** 2 → x * x, math.pow(x, 2) → x * x ─────────────────────
+
+pub struct PowerOptChecker;
+
+impl Checker for PowerOptChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        match expr {
+            Expr::BinOp(b) if matches!(b.op, Operator::Pow) => {
+                let exp = match &*b.right {
+                    Expr::Constant(c) => match &c.value {
+                        Constant::Int(i) => {
+                            if *i == rustpython_ast::bigint::BigInt::from(2u64) { Some(2) }
+                            else if *i == rustpython_ast::bigint::BigInt::from(3u64) { Some(3) }
+                            else { None }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(e) = exp {
+                    let left_src = expr_to_source(source, &b.left);
+                    let replacement = if e == 2 {
+                        format!("{} * {}", left_src, left_src)
+                    } else {
+                        format!("{} * {} * {}", left_src, left_src, left_src)
+                    };
+                    let range = b.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB036".to_string(),
+                        message: format!("Use '{}' instead of '{} ** {}' for performance", replacement, left_src, e),
+                        fix: Some(Fix { start, end, replacement }),
+                    });
+                }
+            }
+            Expr::Call(c) => {
+                if let Expr::Attribute(a) = &*c.func {
+                    if a.attr.as_str() == "pow"
+                        && matches!(&*a.value, Expr::Name(n) if n.id.as_str() == "math")
+                        && c.args.len() == 2
+                    {
+                        let exp = match &c.args[1] {
+                            Expr::Constant(cc) => match &cc.value {
+                                Constant::Int(i) => {
+                                    if *i == rustpython_ast::bigint::BigInt::from(2u64) { Some(2) }
+                                    else if *i == rustpython_ast::bigint::BigInt::from(3u64) { Some(3) }
+                                    else { None }
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(e) = exp {
+                            let arg_src = expr_to_source(source, &c.args[0]);
+                            let replacement = if e == 2 {
+                                format!("{} * {}", arg_src, arg_src)
+                            } else {
+                                format!("{} * {} * {}", arg_src, arg_src, arg_src)
+                            };
+                            let range = c.range();
+                            let start = text_size_to_usize(range.start());
+                            let end = text_size_to_usize(range.end());
+                            let (line, col) = byte_to_line_col(start, line_starts);
+                            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                            findings.push(Finding {
+                                line, col, end_line, end_col,
+                                code: "RAB036".to_string(),
+                                message: format!("Use '{} * {}' instead of 'math.pow()' for squaring", arg_src, arg_src),
+                                fix: Some(Fix { start, end, replacement }),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ── RAB037: map(lambda...) / filter(lambda...) → comprehension ──────────
+
+pub struct MapLambdaChecker;
+
+impl Checker for MapLambdaChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Call(c) = expr {
+            let func_name = get_call_func_name(&c.func);
+            let is_map_filter = matches!(func_name.as_deref(), Some("map" | "filter"));
+            if !is_map_filter || c.args.len() != 2 {
+                return;
+            }
+            if let Expr::Lambda(l) = &c.args[0] {
+                if count_fn_args(&l.args) != 1
+                    || !l.args.kwonlyargs.is_empty()
+                    || l.args.vararg.is_some()
+                    || l.args.kwarg.is_some()
+                {
+                    return;
+                }
+                let arg_name = &iter_fn_args(&l.args).next().unwrap().def.arg; 
+                let body_src = expr_to_source(source, &l.body);
+                let iter_src = expr_to_source(source, &c.args[1]);
+
+                let is_map = func_name.as_deref() == Some("map");
+                let replacement = if is_map {
+                    format!("({} for {} in {})", body_src, arg_name, iter_src)
+                } else {
+                    format!("({} for {} in {} if {})", arg_name, arg_name, iter_src, body_src)
+                };
+
+                let range = c.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                let func = func_name.as_deref().unwrap_or("");
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB037".to_string(),
+                    message: format!("Use a generator expression instead of '{}()' with a lambda", func),
+                    fix: Some(Fix { start, end, replacement }),
+                });
+            }
+        }
+    }
+}
+
+// ── RAB038: in [const, ...] / in (const, ...) → in {const, ...} ─────────
+
+pub struct ListToSetChecker;
+
+impl Checker for ListToSetChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Compare(c) = expr {
+            for (i, op) in c.ops.iter().enumerate() {
+                if i >= c.comparators.len() { break; }
+                if !matches!(op, CmpOp::In | CmpOp::NotIn) { continue; }
+                let container = &c.comparators[i];
+                let all_const = match container {
+                    Expr::List(l) => l.elts.iter().all(|e| matches!(e, Expr::Constant(_))),
+                    Expr::Tuple(t) => t.elts.iter().all(|e| matches!(e, Expr::Constant(_))),
+                    _ => false,
+                };
+                if !all_const { continue; }
+
+                let range = container.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let container_src = &source[start..end];
+                let inner = &container_src[1..container_src.len() - 1];
+                let replacement = format!("{{{}}}", inner);
+
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                let op_str = if matches!(op, CmpOp::In) { "in" } else { "not in" };
+                let left_src = expr_to_source(source, &c.left);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB038".to_string(),
+                    message: format!("Use '{} {} {{...}}' instead of '{} {} [...]' for O(1) membership test", left_src, op_str, left_src, op_str),
+                    fix: Some(Fix { start, end, replacement }),
+                });
+            }
+        }
+    }
+}
+
+// ── RAB040: @dataclass without slots=True ────────────────────────────────
+
+pub struct DataclassSlotsChecker;
+
+impl Checker for DataclassSlotsChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::ClassDef(cd) = stmt {
+            for decorator in &cd.decorator_list {
+                let (msg, fix) = match decorator {
+                    Expr::Name(n) if n.id.as_str() == "dataclass" => {
+                        let range = n.range();
+                        let start = text_size_to_usize(range.start());
+                        let end = text_size_to_usize(range.end());
+                        (Some("Use '@dataclass(slots=True)' to reduce memory usage and speed up attribute access".to_string()),
+                         Some(Fix { start, end, replacement: "dataclass(slots=True)".to_string() }))
+                    }
+                    Expr::Call(c) if matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "dataclass") => {
+                        if c.keywords.iter().any(|kw| {
+                            kw.arg.as_deref() == Some("slots")
+                                && matches!(&kw.value, Expr::Constant(cc) if matches!(&cc.value, Constant::Bool(true)))
+                        }) {
+                            (None, None)
+                        } else {
+                            let range = c.range();
+                            let start = text_size_to_usize(range.start());
+                            let end = text_size_to_usize(range.end());
+                            (Some("Use '@dataclass(slots=True)' to reduce memory usage and speed up attribute access".to_string()),
+                             Some(Fix { start, end, replacement: "dataclass(slots=True)".to_string() }))
+                        }
+                    }
+                    _ => (None, None),
+                };
+                if let Some(msg) = msg {
+                    let range = decorator.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB040".to_string(),
+                        message: msg,
+                        fix,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ── RAB041: re.compile() inside function/loop ───────────────────────────
+
+pub struct ReCompileChecker {
+    depth: u32,
+}
+
+impl ReCompileChecker {
+    pub fn new() -> Self { Self { depth: 0 } }
+}
+
+impl Checker for ReCompileChecker {
+    fn enter_scope(&mut self) { self.depth += 1; }
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
+
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if self.depth <= 1 { return; }
+        if let Expr::Call(c) = expr {
+            let is_compile = match &*c.func {
+                Expr::Attribute(a) if a.attr.as_str() == "compile"
+                    && matches!(&*a.value, Expr::Name(n) if n.id.as_str() == "re") => true,
+                Expr::Name(n) if n.id.as_str() == "compile" => true,
+                _ => false,
+            };
+            if is_compile {
+                let range = c.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB041".to_string(),
+                    message: "Move 're.compile()' to module level to avoid recompiling the regex on every call".to_string(),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
+// ── RAB042: for line in f.readlines() → for line in f ───────────────────
+
+pub struct ReadlinesChecker;
+
+impl Checker for ReadlinesChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::For(f) = stmt {
+            if let Expr::Call(c) = &*f.iter {
+                if let Expr::Attribute(a) = &*c.func {
+                    if a.attr.as_str() == "readlines" && c.args.is_empty() {
+                        let range = f.range();
+                        let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                        let (end_line, end_col) = byte_to_line_col(text_size_to_usize(range.end()), line_starts);
+                        let dot_start = text_size_to_usize(a.value.end());
+                        let call_end = text_size_to_usize(c.range().end());
+                        findings.push(Finding {
+                            line, col, end_line, end_col,
+                            code: "RAB042".to_string(),
+                            message: "Use 'for line in f:' instead of 'for line in f.readlines()' to avoid loading the entire file into memory".to_string(),
+                            fix: Some(Fix { start: dot_start, end: call_end, replacement: String::new() }),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── RAB044: Optional[X] → X | None, Union[A, B] → A | B ────────────────
+
+pub struct TypeUnionChecker;
+
+impl TypeUnionChecker {
+    fn check_expr(&self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Expr::Subscript(s) = expr {
+            match &*s.value {
+                Expr::Name(n) if n.id.as_str() == "Optional" => {
+                    let inner_src = expr_to_source(source, &s.slice);
+                    let replacement = format!("{} | None", inner_src);
+                    let range = s.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB044".to_string(),
+                        message: format!("Use '{} | None' instead of 'Optional[{}]' (Python 3.10+)", inner_src, inner_src),
+                        fix: Some(Fix { start, end, replacement }),
+                    });
+                }
+                Expr::Name(n) if n.id.as_str() == "Union" => {
+                    let (replacement, inner_str) = match &*s.slice {
+                        Expr::Tuple(t) => {
+                            let parts: Vec<String> = t.elts.iter().map(|e| expr_to_source(source, e)).collect();
+                            (parts.join(" | "), format!("[{}]", parts.join(", ")))
+                        }
+                        _ => {
+                            let inner = expr_to_source(source, &s.slice);
+                            (inner.clone(), format!("[{}]", inner))
+                        }
+                    };
+                    let range = s.range();
+                    let start = text_size_to_usize(range.start());
+                    let end = text_size_to_usize(range.end());
+                    let (line, col) = byte_to_line_col(start, line_starts);
+                    let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                    findings.push(Finding {
+                        line, col, end_line, end_col,
+                        code: "RAB044".to_string(),
+                        message: format!("Use '{}' instead of 'Union{}' (Python 3.10+)", replacement, inner_str),
+                        fix: Some(Fix { start, end, replacement }),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+// ── RAB026: sorted(list(x)) → sorted(x), reversed(tuple(x)) → reversed(x) ─
+
+pub struct SortedListChecker;
+
+impl Checker for SortedListChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        let func_name = n.id.as_str();
+        if func_name != "sorted" && func_name != "reversed" { return; }
+        let Some(first_arg) = c.args.first() else { return };
+        let Expr::Call(inner) = first_arg else { return };
+        let Expr::Name(inner_n) = &*inner.func else { return };
+        let inner_name = inner_n.id.as_str();
+        if inner_name != "list" && inner_name != "tuple" { return; }
+        if inner.args.len() != 1 { return; }
+        let inner_arg_src = expr_to_source(source, &inner.args[0]);
+        let replacement = format!("{}({})", func_name, inner_arg_src);
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB026".to_string(),
+            message: format!("Remove redundant {}() call: use '{}({})' instead", inner_name, func_name, inner_arg_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB031: if k in d: return d[k] → return d.get(k) ────────────────────
+
+pub struct DictGetChecker;
+
+impl Checker for DictGetChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::If(i) = stmt else { return };
+        if !i.orelse.is_empty() || i.body.len() != 1 { return; }
+        let Expr::Compare(c) = &*i.test else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        if !matches!(c.ops[0], CmpOp::In) { return; }
+        let dict_name = match &c.comparators[0] {
+            Expr::Name(n) => n,
+            _ => return,
+        };
+        let key_src = expr_to_source(source, &c.left);
+        let dict_id = dict_name.id.as_str();
+        let sub_expr = match &i.body[0] {
+            Stmt::Return(r) => r.value.as_deref(),
+            Stmt::Assign(a) => Some(&*a.value),
+            _ => None,
+        };
+        let Some(sub_expr) = sub_expr else { return };
+        let Expr::Subscript(s) = sub_expr else { return };
+        let Expr::Name(n) = &*s.value else { return };
+        if n.id.as_str() != dict_id { return; }
+        if expr_to_source(source, &s.slice) != key_src { return; }
+        let sub_range = sub_expr.range();
+        let start = text_size_to_usize(sub_range.start());
+        let end = text_size_to_usize(sub_range.end());
+        let replacement = format!("{}.get({})", dict_id, key_src);
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB031".to_string(),
+            message: format!("Use '{}.get({})' instead of '{}[{}]' to avoid a double dict lookup", dict_id, key_src, dict_id, key_src),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB035: x[:] → x.copy() for lists ────────────────────────────────────
+
+pub struct SliceCopyChecker;
+
+impl Checker for SliceCopyChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Subscript(s) = expr else { return };
+        if !matches!(&*s.value, Expr::Name(_)) { return; }
+        let Expr::Slice(sl) = &*s.slice else { return };
+        if sl.lower.is_some() || sl.upper.is_some() || sl.step.is_some() { return; }
+        let obj_src = expr_to_source(source, &s.value);
+        let value_end = text_size_to_usize(s.value.range().end());
+        let slice_end = text_size_to_usize(s.range().end());
+        let (line, col) = byte_to_line_col(value_end, line_starts);
+        let (end_line, end_col) = byte_to_line_col(slice_end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB035".to_string(),
+            message: format!("Use '{}.copy()' instead of '{}[:]'", obj_src, obj_src),
+            fix: Some(Fix { start: value_end, end: slice_end, replacement: ".copy()".to_string() }),
+        });
+    }
+}
+
+// ── RAB039: List[X] → list[X], Dict[K,V] → dict[K,V] (Python 3.9+) ─────
+
+pub struct NativeGenericChecker;
+
+impl Checker for NativeGenericChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Subscript(s) = expr else { return };
+        let Expr::Name(n) = &*s.value else { return };
+        let new_name = match n.id.as_str() {
+            "List" => "list",
+            "Dict" => "dict",
+            "Tuple" => "tuple",
+            "Set" => "set",
+            "FrozenSet" => "frozenset",
+            "Type" => "type",
+            _ => return,
+        };
+        let range = n.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB039".to_string(),
+            message: format!("Use '{}[...]' instead of '{}[...]' (Python 3.9+)", new_name, n.id),
+            fix: Some(Fix { start, end, replacement: new_name.to_string() }),
+        });
+    }
+}
+
+// ── RAB043: Manual list building instead of comprehension ────────────────
+
+pub struct ManualListChecker {
+    list_vars: Vec<String>,
+}
+
+impl ManualListChecker {
+    pub fn new() -> Self { Self { list_vars: Vec::new() } }
+}
+
+impl Checker for ManualListChecker {
+    fn enter_scope(&mut self) { self.list_vars.clear(); }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if let Stmt::Assign(a) = stmt {
+            if a.targets.len() == 1 {
+                if let Expr::Name(n) = &a.targets[0] {
+                    if matches!(&*a.value, Expr::List(l) if l.elts.is_empty()) {
+                        let name = n.id.to_string();
+                        if !self.list_vars.contains(&name) {
+                            self.list_vars.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        if let Stmt::For(f) = stmt {
+            if !f.orelse.is_empty() { return; }
+            if f.body.is_empty() { return; }
+            let target_var = self.list_vars.iter().find(|v| {
+                f.body.iter().all(|s| {
+                    let Stmt::Expr(e) = s else { return false };
+                    let Expr::Call(c) = &*e.value else { return false };
+                    let Expr::Attribute(a) = &*c.func else { return false };
+                    let Expr::Name(n) = &*a.value else { return false };
+                    n.id.as_str() == *v && (a.attr.as_str() == "append" || a.attr.as_str() == "extend")
+                })
+            }).cloned();
+            if target_var.is_none() { return; }
+            let range = f.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB043".to_string(),
+                message: "Use a comprehension instead of a manual for loop with .append()".to_string(),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB045: open() without `with` context manager ───────────────────────
+
+pub struct OpenContextChecker;
+
+impl Checker for OpenContextChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let call_expr = match stmt {
+            Stmt::Expr(e) => Some(e.value.as_ref()),
+            Stmt::Assign(a) => Some(a.value.as_ref()),
+            _ => None,
+        };
+        let Some(expr) = call_expr else { return };
+        let Expr::Call(c) = expr else { return };
+        let Expr::Name(n) = c.func.as_ref() else { return };
+        if n.id.as_str() != "open" { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB045".to_string(),
+            message: "Use 'with open(...) as f:' to ensure the file is properly closed".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB046: sorted(x)[0] → min(x) ─────────────────────────────────────
+
+pub struct SortedIndex0Checker;
+
+impl Checker for SortedIndex0Checker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Subscript(s) = expr else { return };
+        let is_zero = matches!(&*s.slice, Expr::Constant(cc) if matches!(&cc.value, Constant::Int(i) if *i == rustpython_ast::bigint::BigInt::from(0u64)));
+        if !is_zero { return; }
+        let Expr::Call(c) = &*s.value else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        if n.id.as_str() != "sorted" { return; }
+        if c.keywords.iter().any(|k| k.arg.as_deref() == Some("reverse")) { return; }
+
+        let (line, col) = byte_to_line_col(text_size_to_usize(s.range().start()), line_starts);
+        let (end_line, end_col) = byte_to_line_col(text_size_to_usize(s.range().end()), line_starts);
+        let call_src = &source[text_size_to_usize(c.range().start())..text_size_to_usize(c.range().end())];
+        let replacement = call_src.replacen("sorted", "min", 1);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB046".to_string(),
+            message: "Use 'min(...)' instead of 'sorted(...)[0]' for O(n) minimum".to_string(),
+            fix: Some(Fix {
+                start: text_size_to_usize(s.range().start()),
+                end: text_size_to_usize(s.range().end()),
+                replacement,
+            }),
+        });
+    }
+}
+
+// ── RAB047: sorted(x)[-1] → max(x) ────────────────────────────────────
+
+pub struct SortedIndexNeg1Checker;
+
+impl Checker for SortedIndexNeg1Checker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Subscript(s) = expr else { return };
+        let is_neg_one = matches!(&*s.slice, Expr::UnaryOp(u) if matches!(u.op, UnaryOp::USub)
+            && matches!(&*u.operand, Expr::Constant(cc) if matches!(&cc.value, Constant::Int(i) if *i == rustpython_ast::bigint::BigInt::from(1u64))));
+        if !is_neg_one { return; }
+        let Expr::Call(c) = &*s.value else { return };
+        let Expr::Name(n) = &*c.func else { return };
+        if n.id.as_str() != "sorted" { return; }
+        if c.keywords.iter().any(|k| k.arg.as_deref() == Some("reverse")) { return; }
+
+        let (line, col) = byte_to_line_col(text_size_to_usize(s.range().start()), line_starts);
+        let (end_line, end_col) = byte_to_line_col(text_size_to_usize(s.range().end()), line_starts);
+        let call_src = &source[text_size_to_usize(c.range().start())..text_size_to_usize(c.range().end())];
+        let replacement = call_src.replacen("sorted", "max", 1);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB047".to_string(),
+            message: "Use 'max(...)' instead of 'sorted(...)[-1]' for O(n) maximum".to_string(),
+            fix: Some(Fix {
+                start: text_size_to_usize(s.range().start()),
+                end: text_size_to_usize(s.range().end()),
+                replacement,
+            }),
+        });
+    }
+}
+
+// ── RAB048: not x is None → x is not None ─────────────────────────────
+
+pub struct NotIsNoneChecker;
+
+impl Checker for NotIsNoneChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::UnaryOp(u) = expr else { return };
+        if !matches!(u.op, UnaryOp::Not) { return; }
+        let Expr::Compare(c) = &*u.operand else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        if !matches!(c.ops[0], CmpOp::Is) { return; }
+        if !matches!(&c.comparators[0], Expr::Constant(cc) if matches!(&cc.value, Constant::None)) { return; }
+
+        let left_src = &source[text_size_to_usize(c.left.range().start())..text_size_to_usize(c.left.range().end())];
+        let range = u.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{} is not None", left_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB048".to_string(),
+            message: "Use 'x is not None' instead of 'not x is None' (PEP 8)".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB049: x = x + 1 → x += 1 ────────────────────────────────────────
+
+pub struct AugmentedAssignChecker;
+
+impl AugmentedAssignChecker {
+    fn op_to_str(op: &Operator) -> Option<&'static str> {
+        Some(match op {
+            Operator::Add => "+",
+            Operator::Sub => "-",
+            Operator::Mult => "*",
+            Operator::Div => "/",
+            Operator::FloorDiv => "//",
+            Operator::Mod => "%",
+            Operator::Pow => "**",
+            Operator::LShift => "<<",
+            Operator::RShift => ">>",
+            Operator::BitOr => "|",
+            Operator::BitXor => "^",
+            Operator::BitAnd => "&",
+            _ => return None,
+        })
+    }
+}
+
+impl Checker for AugmentedAssignChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Assign(a) = stmt else { return };
+        if a.targets.len() != 1 { return; }
+        let Expr::Name(target) = &a.targets[0] else { return };
+        let Expr::BinOp(b) = &*a.value else { return };
+        let Expr::Name(left) = &*b.left else { return };
+        if left.id != target.id { return; }
+        let Some(op_str) = Self::op_to_str(&b.op) else { return };
+
+        let right_src = &source[text_size_to_usize(b.right.range().start())..text_size_to_usize(b.right.range().end())];
+        let range = a.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{} {}= {}", target.id, op_str, right_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB049".to_string(),
+            message: format!("Use '{}+=' instead of '{} = {}' for augmented assignment", target.id, target.id, target.id),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB053: x is True / x is False → x / not x ────────────────────────
+
+pub struct IsTrueChecker;
+
+impl Checker for IsTrueChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Compare(c) = expr else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        if !matches!(c.ops[0], CmpOp::Is) { return; }
+        let is_true = matches!(&c.comparators[0], Expr::Constant(cc) if matches!(&cc.value, Constant::Bool(true)));
+        let is_false = matches!(&c.comparators[0], Expr::Constant(cc) if matches!(&cc.value, Constant::Bool(false)));
+        if !is_true && !is_false { return; }
+
+        let left_src = &source[text_size_to_usize(c.left.range().start())..text_size_to_usize(c.left.range().end())];
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+
+        let (code, message, replacement) = if is_true {
+            ("RAB053".to_string(), "Use 'x' instead of 'x is True' for boolean check".to_string(), left_src.to_string())
+        } else {
+            ("RAB053".to_string(), "Use 'not x' instead of 'x is False' for boolean check".to_string(), format!("not {}", left_src))
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code, message,
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+impl Checker for TypeUnionChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let (returns, args) = match stmt {
+            Stmt::FunctionDef(f) => (&f.returns, &f.args),
+            Stmt::AsyncFunctionDef(f) => (&f.returns, &f.args),
+            _ => {
+                if let Stmt::AnnAssign(a) = stmt {
+                    self.check_expr(&a.annotation, source, line_starts, findings);
+                }
+                return;
+            }
+        };
+        if let Some(ret) = returns {
+            self.check_expr(ret, source, line_starts, findings);
+        }
+        for arg in iter_fn_args(args) {
+            if let Some(annotation) = &arg.def.annotation {
+                self.check_expr(annotation, source, line_starts, findings);
             }
         }
     }
