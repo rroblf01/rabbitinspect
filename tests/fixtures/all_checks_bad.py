@@ -444,3 +444,27 @@ def bad_raise_without_from():
         pass
     except:
         raise ValueError("no from")
+
+
+def bad_debug_leftover():
+    print("debug")
+    breakpoint()
+
+
+def bad_import_in_function():
+    import os
+
+
+x = {"a": 1, "b": 2, "a": 3}
+
+
+def bad_broad_except():
+    try:
+        pass
+    except Exception:
+        pass
+
+
+def bad_unnecessary_pass():
+    x = 1
+    pass

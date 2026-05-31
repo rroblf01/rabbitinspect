@@ -17,7 +17,10 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB069", "RAB070", "RAB071", "RAB072", "RAB073", "RAB074", "RAB075",
     "RAB076", "RAB077", "RAB078", "RAB079", "RAB080", "RAB081", "RAB082",
     "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088", "RAB089",
+    "RAB097", "RAB098", "RAB099",
     "RAB101", "RAB102",
+    "RAB106",
+    "RAB112",
 ];
 
 #[derive(Debug, Clone)]
@@ -193,6 +196,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut re_compile = crate::checks::ReCompileChecker::new();
     let mut readlines = crate::checks::ReadlinesChecker;
     let mut type_union = crate::checks::TypeUnionChecker;
+    let mut debug_leftover = crate::checks::DebugLeftoverChecker;
+    let mut import_in_func = crate::checks::ImportInFunctionChecker::new();
+    let mut duplicate_key = crate::checks::DuplicateKeyChecker;
+    let mut broad_except = crate::checks::BroadExceptChecker;
+    let mut unnecessary_pass = crate::checks::UnnecessaryPassChecker;
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -277,6 +285,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut re_compile,
         &mut readlines,
         &mut type_union,
+        &mut debug_leftover,
+        &mut import_in_func,
+        &mut duplicate_key,
+        &mut broad_except,
+        &mut unnecessary_pass,
     ];
 
     for c in checkers.iter_mut() {

@@ -65,6 +65,11 @@ All notable changes to this project will be documented in this file.
 | RAB087 | `{k: v for k, v in zip(...)}` → `dict(zip(...))` | ✅ |
 | RAB088 | `while len(x) > 0` → `while x` | ✅ |
 | RAB089 | `copy.copy(x)` → `x.copy()` | ✅ |
+| RAB097 | Debugging `print()` / `breakpoint()` / `pdb.set_trace()` left in code | ❌ |
+| RAB098 | Import inside function/class body, move to module level | ❌ |
+| RAB099 | Duplicate key/element in dict/set literal | ❌ |
+| RAB106 | Too broad `except Exception:` catch | ❌ |
+| RAB112 | Unnecessary `pass` in non-empty body | ✅ |
 
 - Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
 - Rust+PyO3 analysis engine

@@ -10,8 +10,11 @@ def check_code(source, expected_codes):
 
 
 def assert_no_findings(source, ignore_codes=None):
-    if ignore_codes is None:
-        ignore_codes = {"RAB001"}
+    default_ignore = {"RAB001", "RAB097", "RAB098", "RAB099", "RAB106", "RAB112"}
+    if ignore_codes is not None:
+        ignore_codes = default_ignore | ignore_codes
+    else:
+        ignore_codes = default_ignore
     findings = analyze_code(source)
     filtered = [f for f in findings if f["code"] not in ignore_codes]
     assert len(filtered) == 0, f"Expected no findings, got: {filtered}"
@@ -708,6 +711,95 @@ def complex_func(x, y, z):
         check_code(source, {"RAB102"})
 
 
+class TestRAB097DebugLeftover:
+    def test_print_call(self):
+        check_code("print('hello')", {"RAB097"})
+
+    def test_print_with_args(self):
+        check_code("print(x, y, z)", {"RAB097"})
+
+    def test_breakpoint_call(self):
+        check_code("breakpoint()", {"RAB097"})
+
+    def test_pdb_set_trace(self):
+        check_code("pdb.set_trace()", {"RAB097"})
+
+    def test_no_warning_normal_call(self):
+        assert_no_findings("logger.info('hello')", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_print_in_string(self):
+        assert_no_findings('x = "print is a function"', ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB098ImportInFunction:
+    def test_import_in_function(self):
+        check_code("def foo():\n    import os", {"RAB098"})
+
+    def test_from_import_in_function(self):
+        check_code("def foo():\n    from os import path", {"RAB098"})
+
+    def test_no_warning_module_level(self):
+        assert_no_findings("import os", ignore_codes={"RAB001"})
+
+    def test_no_warning_nested_class(self):
+        check_code("class Foo:\n    import os", {"RAB098"})
+
+
+class TestRAB099DuplicateKey:
+    def test_duplicate_dict_key(self):
+        check_code("x = {'a': 1, 'b': 2, 'a': 3}", {"RAB099"})
+
+    def test_duplicate_set_element(self):
+        check_code("x = {1, 2, 3, 1}", {"RAB099"})
+
+    def test_duplicate_str_set(self):
+        check_code("x = {'a', 'b', 'a'}", {"RAB099"})
+
+    def test_no_warning_unique_dict(self):
+        assert_no_findings("x = {'a': 1, 'b': 2, 'c': 3}", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_unique_set(self):
+        assert_no_findings("x = {1, 2, 3}", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_variable_keys(self):
+        assert_no_findings("x = {a: 1, b: 2}", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB106BroadExcept:
+    def test_broad_except_exception(self):
+        check_code("try:\n    pass\nexcept Exception:\n    pass", {"RAB106"})
+
+    def test_broad_except_as(self):
+        check_code("try:\n    pass\nexcept Exception as e:\n    pass", {"RAB106"})
+
+    def test_no_warning_specific_except(self):
+        assert_no_findings("try:\n    pass\nexcept ValueError:\n    pass", ignore_codes={"RAB001", "RAB078"})
+
+    def test_no_warning_multiple_except(self):
+        assert_no_findings("try:\n    pass\nexcept (ValueError, TypeError):\n    pass", ignore_codes={"RAB001", "RAB078"})
+
+
+class TestRAB112UnnecessaryPass:
+    def test_pass_after_code(self):
+        findings = check_code("def foo():\n    x = 1\n    pass", {"RAB112"})
+        f = finding_by_code(findings, "RAB112")
+        assert f["fix"] is not None
+
+    def test_pass_in_while(self):
+        check_code("while True:\n    print(1)\n    pass\n    break", {"RAB112"})
+
+    def test_pass_in_if(self):
+        check_code("if x > 0:\n    print(1)\n    pass", {"RAB112"})
+
+    def test_no_warning_pass_only(self):
+        assert_no_findings("def foo():\n    pass", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_empty_func(self):
+        # When there's a docstring AND pass, the pass is NOT needed (RAB062 handles docstring)
+        # RAB112 also flags pass when body has other stmts - docstring counts as a stmt
+        check_code("def foo():\n    \"\"\"doc\"\"\"\n    pass", {"RAB112"})
+
+
 class TestEndToEndAll:
     def test_all_checks_bad(self):
         with open("tests/fixtures/all_checks_bad.py") as f:
@@ -722,7 +814,10 @@ class TestEndToEndAll:
                      "RAB034", "RAB035", "RAB036", "RAB037", "RAB038",
                      "RAB039", "RAB040", "RAB041", "RAB042",
                      "RAB043", "RAB044", "RAB045",
-                     "RAB101", "RAB102"}
+                     "RAB097", "RAB098", "RAB099",
+                     "RAB101", "RAB102",
+                     "RAB106",
+                     "RAB112"}
         for code in all_codes:
             assert code in codes, f"Expected {code} not found in {codes}"
 
@@ -739,9 +834,10 @@ class TestEndToEndAll:
                              "RAB034", "RAB035", "RAB036", "RAB037", "RAB038",
                              "RAB039", "RAB040", "RAB041", "RAB042",
                              "RAB043", "RAB044", "RAB045",
+                             "RAB098", "RAB099",
                              "RAB101", "RAB102"}
         for code in forbidden_in_good:
-            if code in {"RAB001", "RAB101", "RAB102"}:
+            if code in {"RAB001", "RAB097", "RAB098", "RAB101", "RAB102", "RAB106", "RAB112"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
 

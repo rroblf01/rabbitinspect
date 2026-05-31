@@ -3557,6 +3557,218 @@ impl Checker for CopyCopyChecker {
     }
 }
 
+// ── RAB097: Debug leftover (print, breakpoint, pdb) ─────────────────────────
+
+pub struct DebugLeftoverChecker;
+
+impl Checker for DebugLeftoverChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let is_print = matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "print");
+        let is_breakpoint = matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "breakpoint");
+        let is_pdb_set_trace = matches!(&*c.func, Expr::Attribute(a) if a.attr.as_str() == "set_trace"
+            && matches!(&*a.value, Expr::Name(n) if n.id.as_str() == "pdb"));
+        if !is_print && !is_breakpoint && !is_pdb_set_trace { return; }
+
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let (code, msg) = if is_print {
+            ("RAB097", "Debugging 'print()' call left in production code")
+        } else if is_breakpoint {
+            ("RAB097", "Debugging 'breakpoint()' call left in production code")
+        } else {
+            ("RAB097", "Debugging 'pdb.set_trace()' call left in production code")
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: code.to_string(),
+            message: msg.to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB098: Import inside function body ────────────────────────────────────
+
+pub struct ImportInFunctionChecker {
+    depth: u32,
+}
+
+impl ImportInFunctionChecker {
+    pub fn new() -> Self { Self { depth: 0 } }
+}
+
+impl Checker for ImportInFunctionChecker {
+    fn enter_scope(&mut self) { self.depth += 1; }
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if self.depth <= 1 { return; }
+        // Check for imports inside the statement list (inside function/class body)
+        // depth = 2 means inside a class or function (module level is depth 1)
+        let is_import = matches!(stmt, Stmt::Import(_) | Stmt::ImportFrom(_));
+        if !is_import { return; }
+        let range = match stmt {
+            Stmt::Import(i) => i.range(),
+            Stmt::ImportFrom(i) => i.range(),
+            _ => return,
+        };
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB098".to_string(),
+            message: "Import inside function/class body, move to module level".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB099: Duplicate key in dict/set literal ─────────────────────────────
+
+pub struct DuplicateKeyChecker;
+
+impl DuplicateKeyChecker {
+    fn constant_value(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Constant(c) => match &c.value {
+                Constant::Str(s) => Some(format!("'{}'", s)),
+                Constant::Int(i) => Some(i.to_string()),
+                Constant::Float(f) => Some(f.to_string()),
+                Constant::Bool(b) => Some(b.to_string()),
+                Constant::None => Some("None".to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn check_dict(&self, keys: &[Option<Expr>], _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let mut seen: FxHashSet<String> = FxHashSet::default();
+        for key in keys {
+            let Some(key) = key else { continue };
+            let Some(val) = Self::constant_value(key) else { continue };
+            if !seen.insert(val.clone()) {
+                let range = key.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB099".to_string(),
+                    message: format!("Duplicate key '{}' in dict literal", val),
+                    fix: None,
+                });
+            }
+        }
+    }
+
+    fn check_set(&self, elts: &[Expr], _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let mut seen: FxHashSet<String> = FxHashSet::default();
+        for elt in elts {
+            let Some(val) = Self::constant_value(elt) else { continue };
+            if !seen.insert(val.clone()) {
+                let range = elt.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB099".to_string(),
+                    message: format!("Duplicate element '{}' in set literal", val),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
+impl Checker for DuplicateKeyChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        match expr {
+            Expr::Dict(d) => self.check_dict(&d.keys, source, line_starts, findings),
+            Expr::Set(s) => self.check_set(&s.elts, source, line_starts, findings),
+            _ => {}
+        }
+    }
+}
+
+// ── RAB106: Too broad except Exception ─────────────────────────────────────
+
+pub struct BroadExceptChecker;
+
+impl Checker for BroadExceptChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Try(t) = stmt else { return };
+        for handler in &t.handlers {
+            let ExceptHandler::ExceptHandler(h) = handler;
+            let is_exception = matches!(&h.type_, Some(t) if matches!(&**t, Expr::Name(n) if n.id.as_str() == "Exception"));
+            if !is_exception { continue; }
+            let range = handler.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB106".to_string(),
+                message: "Too broad 'except Exception:', catch only the exceptions you expect".to_string(),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB112: Unnecessary pass in non-empty body ───────────────────────────
+
+pub struct UnnecessaryPassChecker;
+
+impl Checker for UnnecessaryPassChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let body: &[Stmt] = match stmt {
+            Stmt::FunctionDef(f) => &f.body,
+            Stmt::AsyncFunctionDef(f) => &f.body,
+            Stmt::ClassDef(c) => &c.body,
+            Stmt::For(f) => &f.body,
+            Stmt::AsyncFor(f) => &f.body,
+            Stmt::While(w) => &w.body,
+            Stmt::If(i) => &i.body,
+            Stmt::With(w) => &w.body,
+            Stmt::AsyncWith(w) => &w.body,
+            Stmt::Try(t) => &t.body,
+            _ => return,
+        };
+        if body.len() < 2 { return; }
+        let non_pass_count = body.iter().filter(|s| !matches!(s, Stmt::Pass(_))).count();
+        if non_pass_count == 0 { return; }
+        for s in body {
+            if let Stmt::Pass(p) = s {
+                let range = p.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                let line_idx = line_starts.binary_search(&start).unwrap_or_else(|i| i.saturating_sub(1));
+                let line_start = line_starts[line_idx];
+                let line_end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB112".to_string(),
+                    message: "Unnecessary 'pass' in non-empty body".to_string(),
+                    fix: Some(Fix { start: line_start, end: line_end, replacement: String::new() }),
+                });
+            }
+        }
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {
