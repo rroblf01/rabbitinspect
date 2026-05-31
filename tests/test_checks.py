@@ -1423,7 +1423,8 @@ class TestRAB068RaiseWithoutFrom:
         check_code("try:\n    pass\nexcept:\n    raise ValueError('x')", {"RAB068"})
 
     def test_raise_with_from_ok(self):
-        assert_no_findings("try:\n    pass\nexcept Exception as e:\n    raise ValueError('x') from e", ignore_codes={"RAB001", "RAB022"})
+        source = "try:\n    pass\nexcept Exception as e:\n    raise ValueError('x') from e"
+        assert_no_findings(source, ignore_codes={"RAB001", "RAB022"})
 
     def test_raise_outside_except_ok(self):
         assert_no_findings("raise ValueError('x')")

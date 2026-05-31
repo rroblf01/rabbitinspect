@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: pip install uv
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+      - name: Install tomli
+        run: uv pip install tomli --system
+      - name: Run ruff
+        run: uv run ruff check python/ tests/ --ignore=E501
+      - name: Run ty
+        run: uv run ty check python/rabbitinspect/ --python-version 3.14
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Test
+        run: cargo test
+
+  build-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: pip install uv
+      - name: Build wheel
+        run: |
+          uv pip install maturin --system
+          maturin build --release --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  test-linux:
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: pip install uv
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: venv-${{ runner.os }}-${{ matrix.python-version }}-
+      - name: Install dependencies
+        run: uv sync --frozen
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist/
+      - name: Install wheel
+        run: uv pip install dist/*.whl --reinstall
+      - name: Run tests
+        run: uv run pytest tests/ -v

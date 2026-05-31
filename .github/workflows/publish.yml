@@ -1,0 +1,93 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  wheels:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add x86_64 target for macOS cross-compilation
+        if: matrix.os == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin
+
+      - uses: pypa/cibuildwheel@v3.4
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
+          CIBW_ARCHS_LINUX: "x86_64 aarch64"
+          CIBW_ENVIRONMENT_MACOS: "MACOSX_DEPLOYMENT_TARGET=10.12"
+          CIBW_ENVIRONMENT_LINUX: "PATH=/root/.cargo/bin:$PATH"
+          CIBW_BEFORE_ALL_LINUX: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        with:
+          output-dir: dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: pip install build && python -m build --sdist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-sdist
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rabbitinspect
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

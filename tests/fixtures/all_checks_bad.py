@@ -1,3 +1,4 @@
+# ruff: noqa
 import os
 import time
 
@@ -357,7 +358,7 @@ def bad_is_false(x):
     return 0
 
 
-def bad_range_len(items):
+def bad_range_len_v2(items):
     result = []
     for i in range(len(items)):
         result.append(items[i])

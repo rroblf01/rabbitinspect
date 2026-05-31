@@ -1,9 +1,10 @@
 import argparse
 import json
 import os
+import pathlib
 import re
 import sys
-import pathlib
+
 try:
     import tomllib
 except ModuleNotFoundError:

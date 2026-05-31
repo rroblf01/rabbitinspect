@@ -1,3 +1,4 @@
+# ruff: noqa
 def process_items(data):
     unused_var = 42
     results = []
