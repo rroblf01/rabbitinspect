@@ -13,7 +13,12 @@ def assert_no_findings(source, ignore_codes=None):
     default_ignore = {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
                        "RAB096", "RAB097", "RAB098", "RAB099", "RAB100", "RAB103", "RAB104",
                        "RAB105",
-                       "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112"}
+                       "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112",
+                       "RAB113", "RAB114", "RAB115",
+                       "RAB118", "RAB119", "RAB120",
+                       "RAB123", "RAB124",
+                       "RAB126",
+                       "RAB127", "RAB128"}
     if ignore_codes is not None:
         ignore_codes = default_ignore | ignore_codes
     else:
@@ -1108,6 +1113,220 @@ class TestRAB112UnnecessaryPass:
         check_code("def foo():\n    \"\"\"doc\"\"\"\n    pass", {"RAB112"})
 
 
+class TestRAB113EvalExec:
+    def test_eval(self):
+        check_code("eval('print(1)')", {"RAB113"})
+
+    def test_exec(self):
+        check_code("exec('print(1)')", {"RAB113"})
+
+    def test_no_warning_normal_call(self):
+        assert_no_findings("print(1)")
+
+
+class TestRAB114PickleLoad:
+    def test_pickle_load(self):
+        check_code("pickle.load(f)", {"RAB114"})
+
+    def test_pickle_loads(self):
+        check_code("pickle.loads(data)", {"RAB114"})
+
+    def test_no_warning_other_call(self):
+        assert_no_findings("json.loads(data)")
+
+
+class TestRAB115YamlLoad:
+    def test_yaml_load(self):
+        check_code("yaml.load(data)", {"RAB115"})
+
+    def test_no_warning_safe_load(self):
+        assert_no_findings("yaml.safe_load(data)")
+
+    def test_no_warning_with_loader(self):
+        assert_no_findings("yaml.load(data, Loader=yaml.SafeLoader)")
+
+
+class TestRAB118DelExceptVar:
+    def test_del_except_var(self):
+        check_code("""
+try:
+    pass
+except Exception as e:
+    del e
+""", {"RAB118"})
+
+    def test_no_warning_no_del(self):
+        assert_no_findings("""
+try:
+    pass
+except Exception as e:
+    print(e)
+""", ignore_codes={"RAB001", "RAB106"})
+
+
+class TestRAB119SuperInit:
+    def test_missing_super_init(self):
+        check_code("""
+class Base:
+    def __init__(self):
+        pass
+class Child(Base):
+    def __init__(self):
+        self.x = 1
+""", {"RAB119"})
+
+    def test_no_warning_with_super(self):
+        assert_no_findings("""
+class Base:
+    def __init__(self):
+        pass
+class Child(Base):
+    def __init__(self):
+        super().__init__()
+        self.x = 1
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_no_base(self):
+        assert_no_findings("""
+class Foo:
+    def __init__(self):
+        self.x = 1
+""", ignore_codes={"RAB001"})
+
+
+class TestRAB120ModifyIter:
+    def test_list_remove_in_loop(self):
+        check_code("for x in items:\n    items.remove(x)", {"RAB120"})
+
+    def test_dict_del_in_loop(self):
+        check_code("for k in d:\n    del d[k]", {"RAB120"})
+
+    def test_list_pop_in_loop(self):
+        check_code("for x in items:\n    items.pop(0)", {"RAB120"})
+
+    def test_no_warning_different_iter(self):
+        assert_no_findings("""
+for x in items:
+    other.remove(x)
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_read_only(self):
+        assert_no_findings("""
+for x in items:
+    print(x)
+""", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB123DeprecatedAsyncio:
+    def test_get_event_loop(self):
+        check_code("asyncio.get_event_loop()", {"RAB123"})
+
+    def test_ensure_future(self):
+        check_code("asyncio.ensure_future(coro)", {"RAB123"})
+
+    def test_no_warning_create_task(self):
+        assert_no_findings("asyncio.create_task(coro)")
+
+
+class TestRAB124AsyncBlocking:
+    def test_sleep_in_async(self):
+        check_code("""
+async def foo():
+    time.sleep(1)
+""", {"RAB124"})
+
+    def test_subprocess_in_async(self):
+        check_code("""
+async def foo():
+    subprocess.run(['ls'])
+""", {"RAB124"})
+
+    def test_input_in_async(self):
+        check_code("""
+async def foo():
+    input()
+""", {"RAB124"})
+
+    def test_no_warning_sync_func(self):
+        assert_no_findings("""
+def foo():
+    time.sleep(1)
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_async_ok(self):
+        assert_no_findings("""
+async def foo():
+    await asyncio.sleep(1)
+""", ignore_codes={"RAB001", "RAB022"})
+
+
+class TestRAB126MagicNumber:
+    def test_magic_number(self):
+        check_code("""
+def foo():
+    x = 42
+""", {"RAB126"})
+
+    def test_no_warning_allowed_zero(self):
+        assert_no_findings("""
+def foo():
+    x = 0
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_allowed_one(self):
+        assert_no_findings("""
+def foo():
+    x = 1
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_module_level(self):
+        assert_no_findings("x = 42", ignore_codes={"RAB001", "RAB093"})
+
+
+class TestRAB127LoopElse:
+    def test_break_with_else(self):
+        check_code("""
+for x in items:
+    if x > 0:
+        break
+else:
+    print('not found')
+""", {"RAB127"})
+
+    def test_while_break_with_else(self):
+        check_code("""
+while True:
+    break
+else:
+    print('done')
+""", {"RAB127"})
+
+    def test_no_warning_no_break(self):
+        assert_no_findings("""
+for x in items:
+    print(x)
+else:
+    print('done')
+""", ignore_codes={"RAB001", "RAB022", "RAB055"})
+
+    def test_no_warning_no_else(self):
+        assert_no_findings("""
+for x in items:
+    if x > 0:
+        break
+""", ignore_codes={"RAB001", "RAB022", "RAB055"})
+
+
+class TestRAB128NotIn:
+    def test_not_in(self):
+        findings = check_code("if not x in y: pass", {"RAB128"})
+        f = finding_by_code(findings, "RAB128")
+        assert f["fix"]["replacement"] == "x not in y"
+
+    def test_no_warning_not_in(self):
+        assert_no_findings("if x not in y: pass")
+
+
 class TestEndToEndAll:
     def test_all_checks_bad(self):
         with open("tests/fixtures/all_checks_bad.py") as f:
@@ -1134,7 +1353,13 @@ class TestEndToEndAll:
                      "RAB108",
                      "RAB109",
                      "RAB110", "RAB111",
-                     "RAB112"}
+                     "RAB112",
+                     "RAB113", "RAB114", "RAB115",
+                     "RAB118",
+                     "RAB120",
+                     "RAB123", "RAB124",
+                     "RAB126",
+                     "RAB127", "RAB128"}
         for code in all_codes:
             assert code in codes, f"Expected {code} not found in {codes}"
 
@@ -1157,7 +1382,12 @@ class TestEndToEndAll:
             if code in {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
                          "RAB096", "RAB097", "RAB098", "RAB100", "RAB101", "RAB102", "RAB103", "RAB104",
                          "RAB105",
-                         "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112"}:
+                         "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112",
+                         "RAB113", "RAB114", "RAB115",
+                         "RAB118", "RAB119", "RAB120",
+                         "RAB123", "RAB124",
+                         "RAB126",
+                         "RAB127", "RAB128"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
 

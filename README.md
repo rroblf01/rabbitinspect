@@ -194,10 +194,19 @@ fixed = apply_fixes(source, fixes)
 | **RAB110** | Function name should use snake_case convention | ❌ |
 | **RAB111** | Module-level constant should use UPPER_CASE naming | ❌ |
 | **RAB112** | Unnecessary `pass` in non-empty body | ✅ |
+| **RAB113** | `eval()` / `exec()` detected (security risk) | ❌ |
+| **RAB114** | `pickle.load()` / `pickle.loads()` on untrusted data | ❌ |
+| **RAB115** | `yaml.load()` without `Loader=` (security risk) | ❌ |
+| **RAB118** | `del` on exception variable (Python 3.12+ clears chain) | ❌ |
+| **RAB119** | `__init__` in subclass missing `super().__init__()` | ❌ |
+| **RAB120** | Modifying iterable during iteration | ❌ |
+| **RAB123** | Deprecated `asyncio.get_event_loop()` / `ensure_future()` | ❌ |
+| **RAB124** | Blocking call inside async function | ❌ |
+| **RAB126** | Magic number literal, assign to named constant | ❌ |
+| **RAB127** | Redundant `else` in loop with `break` | ❌ |
+| **RAB128** | `not ... in` → `not in` (PEP 8) | ✅ |
 | **RAB101** | Cyclomatic complexity > 10 | ❌ |
 | **RAB102** | Cognitive complexity > 15 | ❌ |
-| **RAB106** | Too broad `except Exception:` catch | ❌ |
-| **RAB112** | Unnecessary `pass` in non-empty body | ✅ |
 
 ---
 

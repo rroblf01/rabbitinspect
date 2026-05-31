@@ -30,6 +30,13 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB109",
     "RAB110", "RAB111",
     "RAB112",
+    "RAB113", "RAB114", "RAB115",
+    "RAB118",
+    "RAB119",
+    "RAB120",
+    "RAB123", "RAB124",
+    "RAB126",
+    "RAB127", "RAB128",
 ];
 
 #[derive(Debug, Clone)]
@@ -210,6 +217,17 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut module_var_type = crate::checks::ModuleVarTypeChecker;
     let mut any_annotation = crate::checks::AnyAnnotationChecker;
     let mut type_default = crate::checks::TypeDefaultMismatchChecker;
+    let mut eval_exec = crate::checks::EvalExecChecker;
+    let mut pickle_load = crate::checks::PickleLoadChecker;
+    let mut yaml_load = crate::checks::YamlLoadChecker;
+    let mut del_except = crate::checks::DelExceptVarChecker::new();
+    let mut modify_iter = crate::checks::ModifyIterChecker;
+    let mut deprecated_asyncio = crate::checks::DeprecatedAsyncioChecker;
+    let mut async_blocking = crate::checks::AsyncBlockingChecker::new();
+    let mut magic_number = crate::checks::MagicNumberChecker::new();
+    let mut loop_else = crate::checks::LoopElseAfterBreakChecker;
+    let mut not_in = crate::checks::NotInChecker;
+    let mut super_init = crate::checks::SuperInitChecker;
     let mut unused_import = crate::checks::UnusedImportChecker::new();
     let mut inconsistent_return = crate::checks::InconsistentReturnChecker::new();
     let mut all_export = crate::checks::AllExportChecker;
@@ -314,6 +332,17 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut module_var_type,
         &mut any_annotation,
         &mut type_default,
+        &mut eval_exec,
+        &mut pickle_load,
+        &mut yaml_load,
+        &mut del_except,
+        &mut modify_iter,
+        &mut deprecated_asyncio,
+        &mut async_blocking,
+        &mut magic_number,
+        &mut loop_else,
+        &mut not_in,
+        &mut super_init,
         &mut unused_import,
         &mut inconsistent_return,
         &mut all_export,

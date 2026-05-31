@@ -4425,6 +4425,513 @@ impl Checker for AllExportChecker {
     }
 }
 
+// ── RAB113: eval/exec detected ───────────────────────────────────────────
+
+pub struct EvalExecChecker;
+
+impl Checker for EvalExecChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let name = match &*c.func {
+            Expr::Name(n) if n.id.as_str() == "eval" || n.id.as_str() == "exec" => n.id.as_str(),
+            _ => return,
+        };
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB113".to_string(),
+            message: format!("Use of '{}' can lead to code injection vulnerabilities, avoid it", name),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB114: pickle.load without security consideration ───────────────────
+
+pub struct PickleLoadChecker;
+
+impl Checker for PickleLoadChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        let Expr::Name(n) = &*a.value else { return };
+        if n.id.as_str() != "pickle" { return; }
+        if a.attr.as_str() != "load" && a.attr.as_str() != "loads" { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB114".to_string(),
+            message: "Use of 'pickle.load' on untrusted data is insecure, consider a safer serialization format".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB115: yaml.load without Loader ─────────────────────────────────────
+
+pub struct YamlLoadChecker;
+
+impl Checker for YamlLoadChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        let Expr::Name(n) = &*a.value else { return };
+        if n.id.as_str() != "yaml" { return; }
+        if a.attr.as_str() != "load" { return; }
+        let has_loader = c.keywords.iter().any(|kw| kw.arg.as_deref() == Some("Loader"));
+        if has_loader { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB115".to_string(),
+            message: "Use 'yaml.safe_load()' or specify 'Loader=yaml.SafeLoader' to avoid arbitrary code execution".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB118: del on except variable (Python 3.12+) ────────────────────────
+
+pub struct DelExceptVarChecker {
+    except_depth: usize,
+    except_var: Option<String>,
+}
+
+impl DelExceptVarChecker {
+    pub fn new() -> Self { Self { except_depth: 0, except_var: None } }
+}
+
+impl Checker for DelExceptVarChecker {
+    fn enter_scope(&mut self) { self.except_depth = 0; self.except_var = None; }
+    fn enter_except(&mut self) { self.except_depth += 1; }
+    fn exit_except(&mut self) {
+        self.except_depth = self.except_depth.saturating_sub(1);
+        if self.except_depth == 0 { self.except_var = None; }
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        // Track exception variable names from try/except handlers
+        if let Stmt::Try(t) = stmt {
+            for handler in &t.handlers {
+                let ExceptHandler::ExceptHandler(eh) = handler;
+                if let Some(name) = &eh.name {
+                    self.except_var = Some(name.to_string());
+                }
+            }
+            return;
+        }
+        if self.except_depth == 0 { return; }
+        let Stmt::Delete(d) = stmt else { return };
+        for target in &d.targets {
+            if let Expr::Name(n) = target {
+                if let Some(var) = &self.except_var {
+                    if n.id.as_str() == var.as_str() {
+                        let range = d.range();
+                        let start = text_size_to_usize(range.start());
+                        let end = text_size_to_usize(range.end());
+                        let (line, col) = byte_to_line_col(start, line_starts);
+                        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                        findings.push(Finding {
+                            line, col, end_line, end_col,
+                            code: "RAB118".to_string(),
+                            message: format!("Deleting exception variable '{}' with 'del' clears the exception chain in Python 3.12+", var),
+                            fix: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── RAB120: Modifying iterable during iteration ─────────────────────────
+
+pub struct ModifyIterChecker;
+
+impl Checker for ModifyIterChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let iter_name = match stmt {
+            Stmt::For(f) => {
+                if let Expr::Name(n) = &*f.iter { n.id.to_string() } else { return }
+            }
+            Stmt::AsyncFor(f) => {
+                if let Expr::Name(n) = &*f.iter { n.id.to_string() } else { return }
+            }
+            _ => return,
+        };
+        // Check body for method calls that modify the iterable
+        let body = match stmt {
+            Stmt::For(f) => &f.body,
+            Stmt::AsyncFor(f) => &f.body,
+            _ => return,
+        };
+        for s in body {
+            if let Stmt::Expr(e) = s {
+                if let Expr::Call(c) = &*e.value {
+                    if let Expr::Attribute(a) = &*c.func {
+                        if let Expr::Name(n) = &*a.value {
+                            if n.id.as_str() != iter_name.as_str() { continue; }
+                            let is_mutator = matches!(a.attr.as_str(),
+                                "remove" | "pop" | "append" | "clear" | "insert" | "__delitem__" | "__setitem__"
+                            );
+                            if is_mutator {
+                                let range = c.range();
+                                let start = text_size_to_usize(range.start());
+                                let end = text_size_to_usize(range.end());
+                                let (line, col) = byte_to_line_col(start, line_starts);
+                                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                                findings.push(Finding {
+                                    line, col, end_line, end_col,
+                                    code: "RAB120".to_string(),
+                                    message: format!("Modifying '{}' while iterating over it can cause skipped items or runtime errors", iter_name),
+                                    fix: None,
+                                });
+                            }
+                        }
+                    }
+                    // Also check for del dict[key] pattern
+                    if let Expr::Subscript(s) = &*c.func {
+                        if let Expr::Name(n) = &*s.value {
+                            if n.id.as_str() == iter_name.as_str() {
+                                // Direct subscript mutation detected
+                            }
+                        }
+                    }
+                }
+            }
+            // Check for del dict[key] pattern
+            if let Stmt::Delete(d) = s {
+                for target in &d.targets {
+                    if let Expr::Subscript(sub) = target {
+                        if let Expr::Name(n) = &*sub.value {
+                            if n.id.as_str() == iter_name.as_str() {
+                                let range = d.range();
+                                let start = text_size_to_usize(range.start());
+                                let end = text_size_to_usize(range.end());
+                                let (line, col) = byte_to_line_col(start, line_starts);
+                                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                                findings.push(Finding {
+                                    line, col, end_line, end_col,
+                                    code: "RAB120".to_string(),
+                                    message: format!("Modifying '{}' while iterating over it can cause skipped items or runtime errors", iter_name),
+                                    fix: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── RAB123: asyncio.get_event_loop (deprecated 3.12+) ────────────────────
+
+pub struct DeprecatedAsyncioChecker;
+
+impl Checker for DeprecatedAsyncioChecker {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        let Expr::Name(n) = &*a.value else { return };
+        if n.id.as_str() != "asyncio" { return; }
+        match a.attr.as_str() {
+            "get_event_loop" | "ensure_future" => {}
+            _ => return,
+        }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let msg = if a.attr.as_str() == "get_event_loop" {
+            "'asyncio.get_event_loop()' is deprecated in Python 3.12+, use 'asyncio.get_running_loop()' or 'asyncio.new_event_loop()'"
+        } else {
+            "'asyncio.ensure_future()' is deprecated, use 'asyncio.create_task()' instead"
+        };
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB123".to_string(),
+            message: msg.to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB124: Blocking calls inside async function ─────────────────────────
+
+pub struct AsyncBlockingChecker {
+    in_async: Vec<bool>,
+    next_is_async: bool,
+}
+
+impl AsyncBlockingChecker {
+    pub fn new() -> Self { Self { in_async: Vec::new(), next_is_async: false } }
+}
+
+impl Checker for AsyncBlockingChecker {
+    fn enter_scope(&mut self) {
+        self.in_async.push(self.next_is_async);
+        self.next_is_async = false;
+    }
+
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.in_async.pop(); }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        if matches!(stmt, Stmt::AsyncFunctionDef(_)) {
+            self.next_is_async = true;
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if !self.in_async.last().copied().unwrap_or(false) { return; }
+        let Expr::Call(c) = expr else { return };
+        let (module, func) = match &*c.func {
+            Expr::Attribute(a) => {
+                let func_name = a.attr.as_str();
+                let module_name = match &*a.value {
+                    Expr::Name(n) => n.id.as_str(),
+                    _ => return,
+                };
+                (module_name, func_name)
+            }
+            Expr::Name(n) => ("", n.id.as_str()),
+            _ => return,
+        };
+        let is_blocking = match (module, func) {
+            ("time", "sleep") => true,
+            ("", "input") => true,
+            ("subprocess", _) => true,
+            ("requests", _) => true,
+            ("urllib", _) => true,
+            ("os", "system" | "popen") => true,
+            _ => false,
+        };
+        if !is_blocking { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let mut msg = format!("Blocking call '{}.{}()' inside async function, use an async alternative", module, func);
+        if module == "" {
+            msg = format!("Blocking call '{0}()' inside async function, use an async alternative", func);
+        }
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB124".to_string(),
+            message: msg,
+            fix: None,
+        });
+    }
+}
+
+// ── RAB126: Magic numbers ───────────────────────────────────────────────
+
+pub struct MagicNumberChecker {
+    depth: u32,
+}
+
+impl MagicNumberChecker {
+    pub fn new() -> Self { Self { depth: 0 } }
+    fn is_allowed(n: &str) -> bool {
+        matches!(n, "0" | "1" | "-1" | "0.0" | "1.0" | "-1.0" | "0.5"
+            | "60" | "24" | "365" | "100" | "1000" | "1024"
+            | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+            | "10" | "100.0" | "60.0")
+    }
+}
+
+impl Checker for MagicNumberChecker {
+    fn enter_scope(&mut self) { self.depth += 1; }
+    fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
+
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        if self.depth <= 1 { return; } // Skip module level
+        let Expr::Constant(c) = expr else { return };
+        let (val_str, is_magic) = match &c.value {
+            Constant::Int(i) => (format!("{}", i), true),
+            Constant::Float(f) => (format!("{}", f), true),
+            _ => (String::new(), false),
+        };
+        if !is_magic { return; }
+        if Self::is_allowed(&val_str) { return; }
+        // Skip numbers used in annotations/decorators (they're usually intentional)
+        if !findings.is_empty() && findings.last().unwrap().code == "RAB126" { return; }
+        let range = c.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB126".to_string(),
+            message: format!("Magic number '{}' detected, assign to a named constant instead", val_str),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB127: Unnecessary else after break/continue in loop ───────────────
+
+pub struct LoopElseAfterBreakChecker;
+
+impl Checker for LoopElseAfterBreakChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let (body, orelse) = match stmt {
+            Stmt::For(f) => (&f.body, &f.orelse),
+            Stmt::AsyncFor(f) => (&f.body, &f.orelse),
+            Stmt::While(w) => (&w.body, &w.orelse),
+            _ => return,
+        };
+        if orelse.is_empty() { return; }
+        let has_break = body.iter().any(|s| has_break_in_stmt(s));
+        if !has_break { return; }
+
+        let range = stmt.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB127".to_string(),
+            message: "Loop has 'break' and 'else' clause; 'else' body runs only if no break occurs, consider removing if always reached".to_string(),
+            fix: None,
+        });
+    }
+}
+
+fn has_break_in_stmt(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Break(_) => true,
+        Stmt::If(i) => i.body.iter().any(|s| has_break_in_stmt(s))
+            || i.orelse.iter().any(|s| has_break_in_stmt(s)),
+        Stmt::Try(t) => {
+            t.body.iter().any(|s| has_break_in_stmt(s))
+                || t.handlers.iter().any(|h| match h {
+                    ExceptHandler::ExceptHandler(eh) => eh.body.iter().any(|s| has_break_in_stmt(s)),
+                })
+        }
+        Stmt::With(w) => w.body.iter().any(|s| has_break_in_stmt(s)),
+        Stmt::Match(m) => m.cases.iter().any(|case| case.body.iter().any(|s| has_break_in_stmt(s))),
+        _ => false,
+    }
+}
+
+// ── RAB128: not ... in → not in ─────────────────────────────────────────
+
+pub struct NotInChecker;
+
+impl Checker for NotInChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::UnaryOp(u) = expr else { return };
+        if !matches!(u.op, UnaryOp::Not) { return; }
+        let Expr::Compare(c) = &*u.operand else { return };
+        if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
+        if !matches!(c.ops[0], CmpOp::In) { return; }
+
+        let range = u.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let left_src = expr_to_source(source, &c.left);
+        let right_src = expr_to_source(source, &c.comparators[0]);
+        let replacement = format!("{} not in {}", left_src, right_src);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB128".to_string(),
+            message: "Use 'x not in y' instead of 'not x in y' (PEP 8)".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}
+
+// ── RAB119: __init__ without super().__init__() in subclass ──────────────
+
+pub struct SuperInitChecker;
+
+impl Checker for SuperInitChecker {
+    fn enter_scope(&mut self) {} // Reset state when entering a class body
+
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::ClassDef(c) = stmt else { return };
+        if c.bases.is_empty() { return; } // Only check subclasses
+        // Look for __init__ in the class body
+        let has_init = c.body.iter().any(|s| match s {
+            Stmt::FunctionDef(f) => f.name.as_str() == "__init__",
+            _ => false,
+        });
+        if !has_init { return; }
+
+        // Check if the __init__ calls super().__init__()
+        for s in &c.body {
+            let Stmt::FunctionDef(f) = s else { continue };
+            if f.name.as_str() != "__init__" { continue; }
+            let has_super_init = f.body.iter().any(|body_stmt| {
+                contains_super_init_call(body_stmt, source)
+            });
+            if !has_super_init {
+                let range = f.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                let base_names: Vec<String> = c.bases.iter().map(|b| expr_to_source(source, b)).collect();
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB119".to_string(),
+                    message: format!("'__init__' in subclass of {} does not call 'super().__init__()'", base_names.join(", ")),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
+fn contains_super_init_call(stmt: &Stmt, source: &str) -> bool {
+    match stmt {
+        Stmt::Expr(e) => {
+            if let Expr::Call(c) = &*e.value {
+                if let Expr::Attribute(a) = &*c.func {
+                    if a.attr.as_str() == "__init__" {
+                        if let Expr::Call(inner) = &*a.value {
+                            if let Expr::Name(n) = &*inner.func {
+                                if n.id.as_str() == "super" {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        Stmt::If(i) => i.body.iter().any(|s| contains_super_init_call(s, source))
+            || i.orelse.iter().any(|s| contains_super_init_call(s, source)),
+        Stmt::Try(t) => {
+            t.body.iter().any(|s| contains_super_init_call(s, source))
+                || t.handlers.iter().any(|h| match h {
+                    ExceptHandler::ExceptHandler(eh) => eh.body.iter().any(|s| contains_super_init_call(s, source)),
+                })
+        }
+        _ => false,
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {

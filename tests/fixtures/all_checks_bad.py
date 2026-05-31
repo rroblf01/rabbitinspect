@@ -530,3 +530,47 @@ def bad_inconsistent_return(x):
 
 
 __all__ = ['foo', 42]
+
+
+eval("print(1)")
+
+
+pickle.loads(data)
+
+
+yaml.load(data)
+
+
+def bad_del_except():
+    try:
+        pass
+    except Exception as e:
+        del e
+
+
+def bad_modify_iter(items):
+    for x in items:
+        items.remove(x)
+
+
+asyncio.get_event_loop()
+
+
+def bad_async_blocking():
+    async def inner():
+        time.sleep(1)
+
+
+def bad_magic():
+    x = 42
+
+
+def bad_loop_else(items):
+    for x in items:
+        if x > 0:
+            break
+    else:
+        print("not found")
+
+
+result = not x in y
