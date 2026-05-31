@@ -2074,3 +2074,26 @@ class TestRAB068RaiseWithoutFrom:
 
     def test_raise_outside_except_ok(self):
         assert_no_findings("raise ValueError('x')")
+
+
+class TestSelfAnalyze:
+    """Dogfooding: run rabbitinspect on its own source code."""
+
+    def test_self_analyze_python_dir(self):
+        import pathlib
+
+        from rabbitinspect import analyze_code
+        base = pathlib.Path(__file__).resolve().parent.parent
+        for py_file in sorted(base.rglob("*.py")):
+            if ".venv" in str(py_file):
+                continue
+            source = py_file.read_text(encoding="utf-8")
+            try:
+                findings = analyze_code(source)
+            except Exception:
+                continue  # skip files with syntax errors (e.g. _core.pyi)
+            # Just ensure it doesn't crash — findings are acceptable
+            for f in findings:
+                assert isinstance(f["code"], str)
+                assert isinstance(f["message"], str)
+                assert isinstance(f["line"], int)

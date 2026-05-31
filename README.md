@@ -48,7 +48,38 @@ file.py:10:5: RAB002 Use 'is' instead of '==' for None comparison
 file.py:25:8: RAB003 Use 'not x' instead of 'len(x) == 0' for emptiness check
 ```
 
-Suppress checks inline:
+### Available commands
+
+| Command | Description |
+|---------|-------------|
+| `rabbitinspect .` | Analyze all Python files recursively |
+| `rabbitinspect file.py --fix` | Analyze and auto-fix |
+| `rabbitinspect --explain RAB002` | Show detailed explanation for a check |
+| `rabbitinspect --list` | List all available checks with descriptions |
+| `rabbitinspect --select RAB002,RAB003 file.py` | Run only specific checks |
+| `rabbitinspect --ignore RAB022,RAB101 file.py` | Skip specific checks |
+| `rabbitinspect --format json file.py` | JSON output |
+| `rabbitinspect --no-color file.py` | Disable colored output |
+
+### Suppressing checks
+
+Inline with `# noqa`:
+
+```python
+x = 42  # noqa: RAB067
+try:
+    pass
+except:
+    pass  # noqa: RAB012, RAB013
+```
+
+Or globally in `pyproject.toml`:
+
+```toml
+[tool.rabbitinspect]
+select = ["RAB002", "RAB003", "RAB006"]
+ignore = ["RAB022", "RAB101"]
+```
 
 ```python
 x = 42  # noqa: RAB067
