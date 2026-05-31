@@ -16,9 +16,6 @@ dependencies = [
     'tomli; python_version < "3.11"',
 ]
 
-[project.optional-dependencies]
-dev = ["ruff", "ty"]
-
 [project.scripts]
 rabbitinspect = "rabbitinspect.__main__:main"
 
@@ -38,3 +35,10 @@ select = ["E", "F", "W", "I"]
 
 [tool.ruff.format]
 quote-style = "single"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.15",
+    "ty>=0.0.40",
+]
