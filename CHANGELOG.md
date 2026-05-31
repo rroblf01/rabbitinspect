@@ -66,6 +66,14 @@ All notable changes to this project will be documented in this file.
 | RAB088 | `while len(x) > 0` → `while x` | ✅ |
 | RAB089 | `copy.copy(x)` → `x.copy()` | ✅ |
 
+- Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
+- Rust+PyO3 analysis engine
+- CLI with ruff-style output and `--fix` flag
+- Auto-fix support for 22 checks
+- Comprehensive test suite (255 tests)
+- Native generics (RAB039) and union syntax (RAB044) checks
+- Cognitive and cyclomatic complexity analysis
+
 ### Fixed
 
 #### Bugs
@@ -87,14 +95,3 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 - Complete README rewrite with all 89 checks, CLI flags, `# noqa`, `pyproject.toml` config, and expanded performance rationale table
 - CHANGELOG added
-
-## [0.1.0] - 2026-05-30
-
-### Added
-- Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
-- Rust+PyO3 analysis engine
-- CLI with ruff-style output and `--fix` flag
-- Auto-fix support for 22 checks
-- Comprehensive test suite (255 tests)
-- Native generics (RAB039) and union syntax (RAB044) checks
-- Cognitive and cyclomatic complexity analysis
