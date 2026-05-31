@@ -20,7 +20,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install uv
         run: pip install uv
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
@@ -78,7 +78,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
         run: pip install uv
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
