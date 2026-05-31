@@ -3081,7 +3081,7 @@ impl Checker for RaiseWithoutFromChecker {
 pub struct EmptyCollectionChecker;
 
 impl Checker for EmptyCollectionChecker {
-    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         if !c.args.is_empty() || !c.keywords.is_empty() { return; }
         let (replacement, name) = match &*c.func {
@@ -3112,7 +3112,7 @@ impl Checker for EmptyCompareChecker {
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Compare(c) = expr else { return };
         if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
-        let (is_eq, is_ne) = match c.ops[0] {
+        let (is_eq, _is_ne) = match c.ops[0] {
             CmpOp::Eq => (true, false),
             CmpOp::NotEq => (false, true),
             _ => return,
@@ -3126,11 +3126,6 @@ impl Checker for EmptyCompareChecker {
         let right_empty = is_empty(&c.comparators[0]);
         if !left_empty && !right_empty { return; }
         let val = if left_empty { &c.comparators[0] } else { &c.left };
-        let range = c.range();
-        let start = text_size_to_usize(range.start());
-        let end = text_size_to_usize(range.end());
-        let (line, col) = byte_to_line_col(start, line_starts);
-        let (end_line, end_col) = byte_to_line_col(end, line_starts);
         let val_src = expr_to_source(source, val);
         let replacement = if is_eq { format!("not {}", val_src) } else { val_src.clone() };
         let range = c.range();
@@ -3500,13 +3495,13 @@ impl Checker for WhileLenChecker {
         let Stmt::While(ww) = stmt else { return };
         let Expr::Compare(c) = &*ww.test else { return };
         if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
-        let is_positive = match c.ops[0] {
+        let _is_positive = match c.ops[0] {
             CmpOp::Gt | CmpOp::NotEq => true,
             _ => return,
         };
         let left = &*c.left;
         let right = &c.comparators[0];
-        let (val, is_zero) = if is_literal_zero(left) { (right, false) }
+        let (val, _is_zero) = if is_literal_zero(left) { (right, false) }
             else if is_literal_zero(right) { (left, true) }
             else { return };
         let Expr::Call(len_call) = val else { return };
