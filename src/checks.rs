@@ -4230,6 +4230,178 @@ impl Checker for ConstantNameChecker {
     }
 }
 
+// ── RAB096: Unused import ────────────────────────────────────────────────
+
+pub struct UnusedImportChecker {
+    imports: Vec<(String, String, usize, usize)>, // (display_name, original_name, line, col)
+    used: Vec<String>,
+    scope_stack: Vec<(Vec<(String, String, usize, usize)>, Vec<String>)>,
+}
+
+impl UnusedImportChecker {
+    pub fn new() -> Self {
+        Self {
+            imports: Vec::new(),
+            used: Vec::new(),
+            scope_stack: Vec::new(),
+        }
+    }
+}
+
+impl Checker for UnusedImportChecker {
+    fn enter_scope(&mut self) {
+        self.scope_stack.push((
+            std::mem::take(&mut self.imports),
+            std::mem::take(&mut self.used),
+        ));
+    }
+
+    fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        for (name, _original, line, col) in &self.imports {
+            if !self.used.iter().any(|u| u.as_str() == name.as_str()) {
+                findings.push(Finding {
+                    line: *line, col: *col, end_line: 0, end_col: 0,
+                    code: "RAB096".to_string(),
+                    message: format!("Import '{}' is unused", name),
+                    fix: None,
+                });
+            }
+        }
+        if let Some((parent_imports, parent_used)) = self.scope_stack.pop() {
+            self.imports = parent_imports;
+            self.used = parent_used;
+        }
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        match stmt {
+            Stmt::Import(i) => {
+                for alias in &i.names {
+                    let name = alias.asname.clone().unwrap_or_else(|| alias.name.clone());
+                    let short = name.split('.').next().unwrap_or(&name).to_string();
+                    let range = alias.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    self.imports.push((short, alias.name.to_string(), line, col));
+                }
+            }
+            Stmt::ImportFrom(i) => {
+                for alias in &i.names {
+                    let name = alias.asname.clone().unwrap_or_else(|| alias.name.clone());
+                    let range = alias.range();
+                    let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
+                    self.imports.push((name.to_string(), name.to_string(), line, col));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, _line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        if let Expr::Name(n) = expr {
+            if n.ctx == ExprContext::Load {
+                self.used.push(n.id.to_string());
+            }
+        }
+    }
+}
+
+// ── RAB105: Inconsistent return statements ───────────────────────────────
+
+pub struct InconsistentReturnChecker {
+    has_value_return: bool,
+    has_bare_return: bool,
+    func_pos: (usize, usize),
+}
+
+impl InconsistentReturnChecker {
+    pub fn new() -> Self {
+        Self {
+            has_value_return: false,
+            has_bare_return: false,
+            func_pos: (0, 0),
+        }
+    }
+}
+
+impl Checker for InconsistentReturnChecker {
+    fn enter_scope(&mut self) {
+        self.has_value_return = false;
+        self.has_bare_return = false;
+    }
+
+    fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        if self.has_value_return && self.has_bare_return {
+            let (line, col) = self.func_pos;
+            findings.push(Finding {
+                line, col, end_line: line, end_col: col,
+                code: "RAB105".to_string(),
+                message: "Inconsistent return statements: mix of bare 'return' and 'return <value>' in the same function".to_string(),
+                fix: None,
+            });
+        }
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], _findings: &mut Vec<Finding>) {
+        if let Stmt::FunctionDef(f) = stmt {
+            let start = text_size_to_usize(f.range().start());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            self.func_pos = (line, col);
+        }
+        if let Stmt::AsyncFunctionDef(f) = stmt {
+            let start = text_size_to_usize(f.range().start());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            self.func_pos = (line, col);
+        }
+        if let Stmt::Return(r) = stmt {
+            if r.value.is_some() {
+                self.has_value_return = true;
+            } else {
+                self.has_bare_return = true;
+            }
+        }
+    }
+}
+
+// ── RAB108: Incorrect __all__ ────────────────────────────────────────────
+
+pub struct AllExportChecker;
+
+impl Checker for AllExportChecker {
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Assign(a) = stmt else { return };
+        if a.targets.len() != 1 { return; }
+        let Expr::Name(n) = &a.targets[0] else { return };
+        if n.id.as_str() != "__all__" { return; }
+
+        // Check that __all__ is a list/tuple of string constants
+        let items: Vec<&Expr> = match &*a.value {
+            Expr::List(l) => l.elts.iter().collect(),
+            Expr::Tuple(t) => t.elts.iter().collect(),
+            _ => return, // Not a list or tuple
+        };
+
+        for item in &items {
+            let is_str = match item {
+                Expr::Constant(c) => matches!(&c.value, Constant::Str(_)),
+                _ => false,
+            };
+            if !is_str {
+                let range = item.range();
+                let start = text_size_to_usize(range.start());
+                let end = text_size_to_usize(range.end());
+                let (line, col) = byte_to_line_col(start, line_starts);
+                let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                findings.push(Finding {
+                    line, col, end_line, end_col,
+                    code: "RAB108".to_string(),
+                    message: "'__all__' should contain only string literals".to_string(),
+                    fix: None,
+                });
+            }
+        }
+    }
+}
+
 impl Checker for TypeUnionChecker {
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {

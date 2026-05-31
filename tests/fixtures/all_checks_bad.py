@@ -1,6 +1,7 @@
 # ruff: noqa
 import os
 import time
+import sys
 
 
 def bad_none_compare(x):
@@ -520,3 +521,12 @@ def BadFunctionName():
 
 
 my_constant = 42
+
+
+def bad_inconsistent_return(x):
+    if x > 0:
+        return x
+    return
+
+
+__all__ = ['foo', 42]

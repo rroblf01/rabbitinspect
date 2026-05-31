@@ -83,6 +83,9 @@ All notable changes to this project will be documented in this file.
 | RAB109 | Class name should use CamelCase convention | ❌ |
 | RAB110 | Function name should use snake_case convention | ❌ |
 | RAB111 | Module-level constant should use UPPER_CASE naming | ❌ |
+| RAB096 | Unused import | ❌ |
+| RAB105 | Inconsistent return statements (mixed bare and valued) | ❌ |
+| RAB108 | `__all__` contains non-string elements | ❌ |
 
 - Initial release with 43 checks (RAB001–RAB045, RAB101–RAB102)
 - Rust+PyO3 analysis engine

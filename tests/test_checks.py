@@ -11,8 +11,9 @@ def check_code(source, expected_codes):
 
 def assert_no_findings(source, ignore_codes=None):
     default_ignore = {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
-                       "RAB097", "RAB098", "RAB099", "RAB100", "RAB103", "RAB104",
-                       "RAB106", "RAB107", "RAB109", "RAB110", "RAB111", "RAB112"}
+                       "RAB096", "RAB097", "RAB098", "RAB099", "RAB100", "RAB103", "RAB104",
+                       "RAB105",
+                       "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112"}
     if ignore_codes is not None:
         ignore_codes = default_ignore | ignore_codes
     else:
@@ -856,6 +857,77 @@ class TestRAB094AnyAnnotation:
         assert_no_findings("def foo(x: str) -> None: pass", ignore_codes={"RAB001"})
 
 
+class TestRAB096UnusedImport:
+    def test_unused_import(self):
+        check_code("import os", {"RAB096"})
+
+    def test_unused_from_import(self):
+        check_code("from os import path", {"RAB096"})
+
+    def test_no_warning_used_import(self):
+        assert_no_findings("import os\nx = os.getcwd()", ignore_codes={"RAB001"})
+
+    def test_no_warning_used_from_import(self):
+        assert_no_findings("from os import getcwd\nx = getcwd()", ignore_codes={"RAB001"})
+
+    def test_no_warning_aliased_import(self):
+        assert_no_findings("import numpy as np\nx = np.array([1])", ignore_codes={"RAB001"})
+
+
+class TestRAB105InconsistentReturn:
+    def test_inconsistent_return(self):
+        check_code("""
+def foo(x):
+    if x > 0:
+        return x
+    return
+""", {"RAB105"})
+
+    def test_inconsistent_return_async(self):
+        check_code("""
+async def fetch(x):
+    if x > 0:
+        return x
+    return
+""", {"RAB105"})
+
+    def test_no_warning_consistent_value(self):
+        assert_no_findings("""
+def foo(x) -> int:
+    if x > 0:
+        return x
+    return 0
+""", ignore_codes={"RAB001", "RAB022"})
+
+    def test_no_warning_bare_only(self):
+        assert_no_findings("""
+def foo(x) -> None:
+    if x > 0:
+        return
+    return
+""", ignore_codes={"RAB001"})
+
+    def test_no_warning_no_return(self):
+        assert_no_findings("""
+def foo(x) -> None:
+    pass
+""", ignore_codes={"RAB001"})
+
+
+class TestRAB108AllExport:
+    def test_non_string_in_all(self):
+        check_code("__all__ = ['foo', 42]", {"RAB108"})
+
+    def test_variable_in_all(self):
+        check_code("x = 'bar'\n__all__ = ['foo', x]", {"RAB108"})
+
+    def test_no_warning_all_strings(self):
+        assert_no_findings("__all__ = ['foo', 'bar']", ignore_codes={"RAB001"})
+
+    def test_no_warning_tuple_all(self):
+        assert_no_findings("__all__ = ('foo', 'bar')", ignore_codes={"RAB001"})
+
+
 class TestRAB100RedundantElif:
     def test_redundant_elif(self):
         check_code("""
@@ -1051,12 +1123,15 @@ class TestEndToEndAll:
                      "RAB039", "RAB040", "RAB041", "RAB042",
                      "RAB043", "RAB044", "RAB045",
                      "RAB090", "RAB091", "RAB092", "RAB093",
+                     "RAB096",
                      "RAB097", "RAB098", "RAB099",
                      "RAB100",
                      "RAB101", "RAB102",
                      "RAB103", "RAB104",
+                     "RAB105",
                      "RAB106",
                      "RAB107",
+                     "RAB108",
                      "RAB109",
                      "RAB110", "RAB111",
                      "RAB112"}
@@ -1080,8 +1155,9 @@ class TestEndToEndAll:
                              "RAB101", "RAB102"}
         for code in forbidden_in_good:
             if code in {"RAB001", "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
-                         "RAB097", "RAB098", "RAB100", "RAB101", "RAB102", "RAB103", "RAB104",
-                         "RAB106", "RAB107", "RAB109", "RAB110", "RAB111", "RAB112"}:
+                         "RAB096", "RAB097", "RAB098", "RAB100", "RAB101", "RAB102", "RAB103", "RAB104",
+                         "RAB105",
+                         "RAB106", "RAB107", "RAB108", "RAB109", "RAB110", "RAB111", "RAB112"}:
                 continue
             assert code not in codes, f"Unexpected {code} found in {codes}"
 

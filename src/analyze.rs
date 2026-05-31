@@ -18,12 +18,15 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB076", "RAB077", "RAB078", "RAB079", "RAB080", "RAB081", "RAB082",
     "RAB083", "RAB084", "RAB085", "RAB086", "RAB087", "RAB088",     "RAB089",
     "RAB090", "RAB091", "RAB092", "RAB093", "RAB094", "RAB095",
+    "RAB096",
     "RAB097", "RAB098", "RAB099",
     "RAB100",
     "RAB101", "RAB102",
     "RAB103", "RAB104",
+    "RAB105",
     "RAB106",
     "RAB107",
+    "RAB108",
     "RAB109",
     "RAB110", "RAB111",
     "RAB112",
@@ -207,6 +210,9 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut module_var_type = crate::checks::ModuleVarTypeChecker;
     let mut any_annotation = crate::checks::AnyAnnotationChecker;
     let mut type_default = crate::checks::TypeDefaultMismatchChecker;
+    let mut unused_import = crate::checks::UnusedImportChecker::new();
+    let mut inconsistent_return = crate::checks::InconsistentReturnChecker::new();
+    let mut all_export = crate::checks::AllExportChecker;
     let mut redundant_elif = crate::checks::RedundantElifChecker;
     let mut self_comp = crate::checks::SelfComparisonChecker;
     let mut pass_through = crate::checks::PassThroughGenChecker;
@@ -308,6 +314,9 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut module_var_type,
         &mut any_annotation,
         &mut type_default,
+        &mut unused_import,
+        &mut inconsistent_return,
+        &mut all_export,
         &mut redundant_elif,
         &mut self_comp,
         &mut pass_through,
