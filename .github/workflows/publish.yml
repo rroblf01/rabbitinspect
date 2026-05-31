@@ -29,13 +29,21 @@ jobs:
 
       - name: Set up QEMU for cross-architecture builds
         if: runner.os == 'Linux'
-        uses: docker/setup-qemu-action@v4.1.0
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set Linux architectures per runner
+        if: runner.os == 'Linux'
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "CIBW_ARCHS_LINUX=aarch64" >> $GITHUB_ENV
+          else
+            echo "CIBW_ARCHS_LINUX=x86_64 aarch64" >> $GITHUB_ENV
+          fi
 
       - uses: pypa/cibuildwheel@v3.4
         env:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
-          CIBW_ARCHS_LINUX: "x86_64 aarch64"
           CIBW_ENVIRONMENT_MACOS: "MACOSX_DEPLOYMENT_TARGET=10.12"
           CIBW_ENVIRONMENT_LINUX: "PATH=/root/.cargo/bin:$PATH"
           CIBW_BEFORE_ALL_LINUX: |
