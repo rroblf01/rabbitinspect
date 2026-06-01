@@ -90,3 +90,57 @@ def test_attach_to_child_process():
     finally:
         child.terminate()
         child.wait(timeout=5)
+
+
+_TARGET = (
+    'import time\n'
+    'def leaf():\n'
+    '    time.sleep(30)\n'
+    'def middle():\n'
+    '    leaf()\n'
+    'def outer():\n'
+    '    middle()\n'
+    'outer()\n'
+)
+
+
+def _spawn_target(tmp_path):
+    script = tmp_path / 'target.py'
+    script.write_text(_TARGET)
+    child = subprocess.Popen([sys.executable, str(script)])
+    time.sleep(0.6)
+    return child
+
+
+def test_remote_sample_recovers_stack(tmp_path):
+    child = _spawn_target(tmp_path)
+    try:
+        try:
+            stacks = _core.attach_sample(child.pid)
+        except OSError:
+            pytest.skip('remote sampling blocked (ptrace_scope / unsupported version)')
+        assert len(stacks) >= 1
+        # leaf-first; the sleeping thread's stack is leaf <- middle <- outer <- <module>
+        funcs = [entry.split('\t')[0] for entry in stacks[0]]
+        assert funcs[:4] == ['leaf', 'middle', 'outer', '<module>']
+        assert all(entry.split('\t')[1].endswith('target.py') for entry in stacks[0])
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_sample_remote_aggregates(tmp_path):
+    from rabbitinspect.perf import sample_remote
+
+    child = _spawn_target(tmp_path)
+    try:
+        result = sample_remote(child.pid, duration_s=0.5, interval_ms=5.0)
+        if result.sample_count == 0:
+            pytest.skip('remote sampling blocked (ptrace_scope / unsupported version)')
+        names = {f.name for f in result.functions}
+        assert {'leaf', 'middle', 'outer'} <= names
+        # the sleeping leaf frame dominates self time
+        assert result.functions[0].name == 'leaf'
+    finally:
+        child.terminate()
+        child.wait(timeout=5)

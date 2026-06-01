@@ -774,8 +774,58 @@ def profile_script(
     return prof.result
 
 
-def _attach_cli(pid: int) -> int:
-    """Inspect a running process (F4 step 1: connection + introspection)."""
+def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) -> ProfileResult:
+    """Sample an already-running process for ``duration_s`` and aggregate it.
+
+    Reads the target's stacks out-of-process via :func:`_core.attach_sample`
+    (no code changes in the target) and reuses the normal aggregation/report.
+    """
+    import time
+
+    frames: list[str] = []
+    frame_index: dict[str, int] = {}
+    stacks: list[list[int]] = []
+    sample_ts: list[float] = []
+
+    def intern(entry: str) -> int:
+        idx = frame_index.get(entry)
+        if idx is None:
+            idx = len(frames)
+            frames.append(entry)
+            frame_index[entry] = idx
+        return idx
+
+    start = time.perf_counter()
+    while time.perf_counter() - start < duration_s:
+        try:
+            snapshot = _core.attach_sample(pid)
+        except OSError:
+            break  # target exited or became unreadable
+        now = (time.perf_counter() - start) * 1000.0
+        for stack in snapshot:
+            stacks.append([intern(e) for e in stack])
+            sample_ts.append(now)
+        time.sleep(interval_ms / 1000.0)
+
+    raw = {
+        'frames': frames,
+        'stacks': stacks,
+        'ts': sample_ts,
+        'tids': [],
+        'rss': [],
+        'spans': [],
+        'queries': [],
+        'duration_ms': (time.perf_counter() - start) * 1000.0,
+        'sample_count': len(stacks),
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    analyze_hotspots(result)
+    return result
+
+
+def _attach_cli(pid: int, duration: float | None, out: str, interval_ms: float) -> int:
+    """Inspect / sample an already-running process (F4)."""
     try:
         info = _core.attach_python_info(pid)
     except OSError as e:
@@ -794,11 +844,19 @@ def _attach_cli(pid: int) -> int:
         print(f'  _PyRuntime:  0x{details["py_runtime_addr"]:x}', file=sys.stderr)
     except OSError as e:
         print(f'  python:      version unresolved ({e})', file=sys.stderr)
-    print(
-        '  note: remote stack sampling is not implemented yet '
-        '(frame walking lands in the next F4 step).',
-        file=sys.stderr,
-    )
+        return 1
+
+    if duration is None:
+        print('  (pass --duration to sample and write an HTML report)', file=sys.stderr)
+        return 0
+
+    print(f'Sampling for {duration:.1f}s …', file=sys.stderr)
+    result = sample_remote(pid, duration_s=duration, interval_ms=interval_ms)
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write(result.to_html())
+    print(f'  {result.sample_count} samples; report written to {out}', file=sys.stderr)
+    if result.functions:
+        print(f'  hottest: {result.functions[0].name} ({result.functions[0].self_pct:.1f}% self)', file=sys.stderr)
     return 0
 
 
@@ -819,12 +877,15 @@ def run_perf_cli(argv: list[str]) -> int:
     runp.add_argument('script', help='Python script to profile')
     runp.add_argument('script_args', nargs=argparse.REMAINDER, help='Arguments passed to the script')
 
-    attachp = sub.add_parser('attach', help='Inspect an already-running process (F4, in progress)')
+    attachp = sub.add_parser('attach', help='Inspect / sample an already-running process (Linux)')
     attachp.add_argument('--pid', type=int, required=True, help='Target process id')
+    attachp.add_argument('--duration', type=float, default=None, help='Seconds to sample (omit for info only)')
+    attachp.add_argument('--out', default='rabbitinspect-perf.html', help='HTML report output path')
+    attachp.add_argument('--interval', type=float, default=10.0, help='Sampling interval in ms')
 
     args = parser.parse_args(argv)
     if args.cmd == 'attach':
-        return _attach_cli(args.pid)
+        return _attach_cli(args.pid, args.duration, args.out, args.interval)
     if args.cmd == 'run':
         result = profile_script(
             args.script,

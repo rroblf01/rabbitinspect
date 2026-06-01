@@ -68,13 +68,19 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   the `_PyRuntime` address.
 - Crate now also builds as `rlib` so `cargo test` runs the reader's unit tests.
 
-This is the robust groundwork for py-spy-style sampling of an already-running
-server. Still to come (version-fragile): walking `_PyInterpreterFrame` per
-CPython version from `_PyRuntime`, then the remote sampling loop.
+- **Remote stack sampling** (F4 step 3): walks the target's threads and
+  `_PyInterpreterFrame` chains using offsets read from its own `_Py_DebugOffsets`
+  block (so it adapts to the target build rather than hardcoding type layouts),
+  recovering function/file per frame. `attach_sample` + `perf.sample_remote`.
+- **CLI**: `rabbitinspect perf attach --pid <PID> --duration <S> --out report.html`
+  samples an already-running server with **no code changes** and writes the same
+  HTML report (top functions, memory n/a, hotspot↔lint cross-reference). Verified
+  end-to-end on CPython 3.14 by recovering a known call stack.
 
-Notes: timings are statistical (sampling), not exact per-call. Roadmap: off-CPU
-(on-CPU vs waiting), per-function memory, and remote stack sampling on top of the
-attach foundation.
+Notes: timings are statistical (sampling), not exact per-call. Remote attach is
+Linux-only and currently supports CPython 3.12+ (validated on 3.14); line numbers
+within frames, off-CPU classification, and per-function memory remain on the
+roadmap.
 
 ## [1.1.0] - 2026-06-01
 

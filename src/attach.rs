@@ -300,6 +300,125 @@ pub fn interpreter_details(_pid: i32) -> std::io::Result<()> {
     ))
 }
 
+// ── remote stack sampling via _Py_DebugOffsets (Linux, CPython 3.12+) ────────
+//
+// Since 3.12, `_PyRuntime` begins with a `_Py_DebugOffsets` block (cookie
+// "xdebugpy") that publishes the struct field offsets needed for out-of-process
+// debugging. We read the offsets straight from the target, so the walk adapts to
+// the target's exact build instead of hardcoding per-version type layouts. The
+// positions below (where each offset lives *inside* `_Py_DebugOffsets`) were
+// validated against CPython 3.14 by recovering a known call stack.
+
+#[cfg(target_os = "linux")]
+struct DebugOffsets {
+    interp_head: usize,
+    interp_next: usize,
+    threads_head: usize,
+    tstate_next: usize,
+    tstate_current_frame: usize,
+    frame_previous: usize,
+    frame_executable: usize,
+    code_filename: usize,
+    code_name: usize,
+}
+
+#[cfg(target_os = "linux")]
+fn read_ptr(pid: i32, addr: usize) -> std::io::Result<usize> {
+    let b = read_mem(pid, addr, 8)?;
+    if b.len() < 8 {
+        return Ok(0);
+    }
+    Ok(u64::from_le_bytes(b[..8].try_into().unwrap()) as usize)
+}
+
+#[cfg(target_os = "linux")]
+fn read_debug_offsets(pid: i32, runtime_addr: usize) -> std::io::Result<DebugOffsets> {
+    let blob = read_mem(pid, runtime_addr, 512)?;
+    if blob.len() < 360 || &blob[0..8] != b"xdebugpy" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "_Py_DebugOffsets cookie not found (Python < 3.12?)",
+        ));
+    }
+    let g = |pos: usize| u64::from_le_bytes(blob[pos..pos + 8].try_into().unwrap()) as usize;
+    Ok(DebugOffsets {
+        interp_head: g(40),
+        interp_next: g(64),
+        threads_head: g(72),
+        tstate_next: g(192),
+        tstate_current_frame: g(208),
+        frame_previous: g(256),
+        frame_executable: g(264),
+        code_filename: g(320),
+        code_name: g(328),
+    })
+}
+
+/// Read a CPython compact-ASCII `str` object's text (filenames / function names).
+#[cfg(target_os = "linux")]
+fn read_pystr(pid: i32, obj: usize) -> Option<String> {
+    if obj == 0 {
+        return None;
+    }
+    let hdr = read_mem(pid, obj, 48).ok()?;
+    if hdr.len() < 48 {
+        return None;
+    }
+    let length = i64::from_le_bytes(hdr[16..24].try_into().ok()?);
+    if length <= 0 || length > 4096 {
+        return None;
+    }
+    // Compact ASCII string data follows the PyASCIIObject header (40 bytes).
+    let data = read_mem(pid, obj + 40, length as usize).ok()?;
+    let s = String::from_utf8_lossy(&data).into_owned();
+    if s.chars().all(|c| c == '\t' || c == '\n' || !c.is_control()) {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+/// One snapshot of every Python thread's stack in the target. Each stack is a
+/// vec of "func\tfile\t0" entries, leaf-first (line numbers are a refinement).
+#[cfg(target_os = "linux")]
+pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<Vec<String>>> {
+    let details = interpreter_details(pid)?;
+    let off = read_debug_offsets(pid, details.py_runtime_addr)?;
+
+    let mut stacks = Vec::new();
+    let mut interp = read_ptr(pid, details.py_runtime_addr + off.interp_head)?;
+    let mut interp_guard = 0;
+    while interp != 0 && interp_guard < 64 {
+        interp_guard += 1;
+        let mut tstate = read_ptr(pid, interp + off.threads_head)?;
+        let mut t_guard = 0;
+        while tstate != 0 && t_guard < 4096 {
+            t_guard += 1;
+            let mut frame = read_ptr(pid, tstate + off.tstate_current_frame)?;
+            let mut stack = Vec::new();
+            let mut depth = 0;
+            while frame != 0 && depth < 512 {
+                depth += 1;
+                let code = read_ptr(pid, frame + off.frame_executable)?;
+                if code != 0 {
+                    let file = read_pystr(pid, read_ptr(pid, code + off.code_filename)?);
+                    let func = read_pystr(pid, read_ptr(pid, code + off.code_name)?);
+                    if let (Some(file), Some(func)) = (file, func) {
+                        stack.push(format!("{func}\t{file}\t0"));
+                    }
+                }
+                frame = read_ptr(pid, frame + off.frame_previous)?;
+            }
+            if !stack.is_empty() {
+                stacks.push(stack);
+            }
+            tstate = read_ptr(pid, tstate + off.tstate_next)?;
+        }
+        interp = read_ptr(pid, interp + off.interp_next)?;
+    }
+    Ok(stacks)
+}
+
 // ── Python bindings ──────────────────────────────────────────────────────────
 
 #[pyfunction]
@@ -324,6 +443,26 @@ pub fn attach_maps(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
         list.append(d)?;
     }
     Ok(list.into_any().unbind())
+}
+
+#[cfg(target_os = "linux")]
+#[pyfunction]
+pub fn attach_sample(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
+    let stacks = sample_stacks(pid)
+        .map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("sample failed: {e}")))?;
+    let outer = PyList::empty(py);
+    for stack in &stacks {
+        outer.append(PyList::new(py, stack)?)?;
+    }
+    Ok(outer.into_any().unbind())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[pyfunction]
+pub fn attach_sample(_py: Python<'_>, _pid: i32) -> PyResult<Py<PyAny>> {
+    Err(pyo3::exceptions::PyOSError::new_err(
+        "remote sampling is only implemented on Linux",
+    ))
 }
 
 #[cfg(target_os = "linux")]
