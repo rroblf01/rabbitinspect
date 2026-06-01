@@ -85,7 +85,7 @@ pub fn read_mem(_pid: i32, _addr: usize, _len: usize) -> std::io::Result<Vec<u8>
 
 fn is_python_mapping(path: &str) -> bool {
     let base = path.rsplit('/').next().unwrap_or(path);
-    base.contains("libpython") || (base.starts_with("python") && base.contains('3'))
+    base.contains("libpython") || base.starts_with("python")
 }
 
 pub struct PythonInfo {

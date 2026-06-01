@@ -774,6 +774,28 @@ def profile_script(
     return prof.result
 
 
+def _attach_cli(pid: int) -> int:
+    """Inspect a running process (F4 step 1: connection + introspection)."""
+    try:
+        info = _core.attach_python_info(pid)
+    except OSError as e:
+        print(f'Cannot inspect pid {pid}: {e}', file=sys.stderr)
+        return 1
+    if not info['is_python']:
+        print(f'pid {pid} does not look like a CPython process (no python/libpython mapping).', file=sys.stderr)
+        return 1
+    print(f'Attached to pid {pid}', file=sys.stderr)
+    print(f'  interpreter: {info["interpreter_path"]}', file=sys.stderr)
+    print(f'  image base:  0x{info["base"]:x}', file=sys.stderr)
+    print(f'  mappings:    {info["maps_count"]}', file=sys.stderr)
+    print(
+        '  note: remote stack sampling is not implemented yet '
+        '(symbol resolution + frame walking land in the next F4 step).',
+        file=sys.stderr,
+    )
+    return 0
+
+
 def run_perf_cli(argv: list[str]) -> int:
     """Entry point for ``rabbitinspect perf ...``."""
     import argparse
@@ -791,7 +813,12 @@ def run_perf_cli(argv: list[str]) -> int:
     runp.add_argument('script', help='Python script to profile')
     runp.add_argument('script_args', nargs=argparse.REMAINDER, help='Arguments passed to the script')
 
+    attachp = sub.add_parser('attach', help='Inspect an already-running process (F4, in progress)')
+    attachp.add_argument('--pid', type=int, required=True, help='Target process id')
+
     args = parser.parse_args(argv)
+    if args.cmd == 'attach':
+        return _attach_cli(args.pid)
     if args.cmd == 'run':
         result = profile_script(
             args.script,

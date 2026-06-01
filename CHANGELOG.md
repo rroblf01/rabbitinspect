@@ -53,9 +53,24 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   flamegraph / time-order view (`perf.to_speedscope`).
 - **Demo** `examples/perf_demo.py` and a README "Runtime profiler" section.
 
+### Added — attach foundation (F4, step 1)
+
+- **Cross-process introspection** (`rabbitinspect.attach`, Linux): read another
+  process's memory via `process_vm_readv`, parse `/proc/<pid>/maps`, and detect
+  whether a pid is a CPython process and where its interpreter image is mapped.
+  Exposed as `_core.attach_read_mem` / `attach_maps` / `attach_python_info`.
+- **CLI**: `rabbitinspect perf attach --pid <PID>` connects to a running process
+  and reports interpreter path / image base / mapping count.
+- Crate now also builds as `rlib` so `cargo test` runs the reader's unit tests.
+
+This is the robust, version-independent groundwork for py-spy-style sampling of
+an already-running server. Still to come (version-fragile): resolving
+`_PyRuntime` / `Py_Version` and walking `_PyInterpreterFrame` per CPython
+version, then the remote sampling loop.
+
 Notes: timings are statistical (sampling), not exact per-call. Roadmap: off-CPU
-(on-CPU vs waiting), per-function memory, and attach-to-PID for already-running
-servers.
+(on-CPU vs waiting), per-function memory, and remote stack sampling on top of the
+attach foundation.
 
 ## [1.1.0] - 2026-06-01
 
