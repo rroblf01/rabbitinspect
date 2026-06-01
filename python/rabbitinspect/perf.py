@@ -14,8 +14,11 @@ function was observed on the stack, not exact per-call measurements.
 
 from __future__ import annotations
 
+import ast
 import html
 import json
+import os
+import re
 import runpy
 import sys
 from collections import Counter
@@ -60,6 +63,32 @@ class EndpointStat:
 
 
 @dataclass
+class Query:
+    ts_ms: float
+    sql: str
+    normalized: str
+    duration_ms: float
+
+
+@dataclass
+class NPlusOne:
+    method: str
+    route: str
+    normalized_sql: str
+    max_count: int  # most repetitions seen within a single request
+    requests_affected: int
+    total_ms: float
+
+
+@dataclass
+class HotspotLint:
+    function: str
+    file: str
+    self_ms: float
+    findings: list[dict]  # {code, line, message}
+
+
+@dataclass
 class ProfileResult:
     duration_ms: float
     sample_count: int
@@ -69,7 +98,18 @@ class ProfileResult:
     rss: list[tuple[float, float]]  # (ms, bytes)
     spans: list[Span] = field(default_factory=list)
     endpoints: list[EndpointStat] = field(default_factory=list)
+    queries: list[Query] = field(default_factory=list)
+    n_plus_one: list[NPlusOne] = field(default_factory=list)
+    hotspot_lints: list[HotspotLint] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def query_count(self) -> int:
+        return len(self.queries)
+
+    @property
+    def query_total_ms(self) -> float:
+        return sum(q.duration_ms for q in self.queries)
 
     @property
     def peak_rss_bytes(self) -> float:
@@ -156,6 +196,17 @@ def aggregate(raw: dict) -> ProfileResult:
     ]
     endpoints = _aggregate_endpoints(spans)
 
+    queries = [
+        Query(
+            ts_ms=float(q.get('ts_ms', 0.0)),
+            sql=str(q.get('sql', '')),
+            normalized=normalize_sql(str(q.get('sql', ''))),
+            duration_ms=float(q.get('duration_ms', 0.0)),
+        )
+        for q in raw.get('queries', [])
+    ]
+    n_plus_one = _detect_n_plus_one(spans, queries)
+
     return ProfileResult(
         duration_ms=duration_ms,
         sample_count=sample_count,
@@ -165,8 +216,82 @@ def aggregate(raw: dict) -> ProfileResult:
         rss=rss,
         spans=spans,
         endpoints=endpoints,
+        queries=queries,
+        n_plus_one=n_plus_one,
         raw=raw,
     )
+
+
+# ── SQL / N+1 ────────────────────────────────────────────────────────────────
+
+_SQL_STR = re.compile(r"'[^']*'")
+_SQL_NUM = re.compile(r'\b\d+\b')
+_SQL_INLIST = re.compile(r'\(\s*\?(?:\s*,\s*\?)+\s*\)')
+_SQL_WS = re.compile(r'\s+')
+
+
+def normalize_sql(sql: str) -> str:
+    """Collapse a query to its shape so duplicates group together.
+
+    Replaces string/number literals with ``?`` and ``IN (?, ?, ?)`` with
+    ``IN (?)`` so the same statement with different parameters is one key.
+    """
+    s = _SQL_STR.sub('?', sql)
+    s = _SQL_NUM.sub('?', s)
+    s = _SQL_INLIST.sub('(?)', s)
+    s = _SQL_WS.sub(' ', s).strip()
+    return s
+
+
+def _detect_n_plus_one(spans: list[Span], queries: list[Query], threshold: int = 2) -> list[NPlusOne]:
+    """Flag normalized queries repeated >= ``threshold`` times in one request."""
+    if not queries:
+        return []
+
+    # Assign each query to the request span covering its timestamp.
+    sorted_spans = sorted(spans, key=lambda s: s.start_ms)
+
+    def request_of(ts: float) -> tuple[str, str] | None:
+        for s in sorted_spans:
+            if s.start_ms <= ts <= s.end_ms:
+                return (s.method, s.route)
+        return None
+
+    # (request, normalized) -> list of per-request counts and durations.
+    per_request: dict[tuple, dict[str, list[float]]] = {}
+    NO_REQ = ('', '(no request)')
+    for q in queries:
+        req = request_of(q.ts_ms) or NO_REQ
+        bucket = per_request.setdefault(req, {})
+        bucket.setdefault(q.normalized, []).append(q.duration_ms)
+
+    # Aggregate to endpoint level.
+    agg: dict[tuple, dict] = {}
+    for (method, route), buckets in per_request.items():
+        for norm, durs in buckets.items():
+            if len(durs) < threshold:
+                continue
+            key = (method, route, norm)
+            entry = agg.setdefault(
+                key, {'max_count': 0, 'requests_affected': 0, 'total_ms': 0.0}
+            )
+            entry['max_count'] = max(entry['max_count'], len(durs))
+            entry['requests_affected'] += 1
+            entry['total_ms'] += sum(durs)
+
+    offenders = [
+        NPlusOne(
+            method=method,
+            route=route,
+            normalized_sql=norm,
+            max_count=v['max_count'],
+            requests_affected=v['requests_affected'],
+            total_ms=v['total_ms'],
+        )
+        for (method, route, norm), v in agg.items()
+    ]
+    offenders.sort(key=lambda n: (n.max_count, n.total_ms), reverse=True)
+    return offenders
 
 
 def _percentile(sorted_vals: list[float], pct: float) -> float:
@@ -226,6 +351,68 @@ class Profiler:
     def __exit__(self, *exc) -> None:
         raw = _core.perf_stop()
         self.result = aggregate(raw)
+
+
+# ── hotspot ↔ lint cross-reference ───────────────────────────────────────────
+
+
+def _function_ranges(source: str) -> dict[str, list[tuple[int, int]]]:
+    """Map each function/method name to its [start, end] line ranges."""
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ranges
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = node.lineno
+            end = getattr(node, 'end_lineno', None) or start
+            ranges.setdefault(node.name, []).append((start, end))
+    return ranges
+
+
+def analyze_hotspots(result: ProfileResult, top_n: int = 25) -> list[HotspotLint]:
+    """Cross-reference the hottest functions against rabbitinspect's own lints.
+
+    For each hot function whose source file is available, run the static
+    analyzer and attach any findings located inside that function. This is the
+    toolkit's differentiator: it points the static rules straight at the code
+    that actually dominates runtime.
+    """
+    from rabbitinspect import analyze_code
+
+    cache: dict[str, tuple[list[dict], dict[str, list[tuple[int, int]]]] | None] = {}
+    out: list[HotspotLint] = []
+
+    for fn in result.functions[:top_n]:
+        path = fn.file
+        if not path.endswith('.py') or not os.path.exists(path):
+            continue
+        if path not in cache:
+            try:
+                with open(path, encoding='utf-8') as f:
+                    src = f.read()
+            except OSError:
+                cache[path] = None
+                continue
+            cache[path] = (analyze_code(src), _function_ranges(src))
+        cached = cache[path]
+        if cached is None:
+            continue
+        findings, ranges = cached
+        spans = ranges.get(fn.name)
+        if not spans:
+            continue
+        matched = [
+            {'code': f['code'], 'line': f['line'], 'message': f['message']}
+            for f in findings
+            if any(lo <= f['line'] <= hi for lo, hi in spans)
+        ]
+        if matched:
+            out.append(HotspotLint(function=fn.name, file=path, self_ms=fn.self_ms, findings=matched))
+
+    result.hotspot_lints = out
+    return out
 
 
 # ── HTML report ───────────────────────────────────────────────────────────
@@ -355,6 +542,71 @@ def _requests_section(result: ProfileResult) -> str:
 """
 
 
+def _database_section(result: ProfileResult) -> str:
+    if not result.queries:
+        return ''
+    slowest = sorted(result.queries, key=lambda q: q.duration_ms, reverse=True)[:10]
+    slow_rows = '\n'.join(
+        '<tr>'
+        f'<td class="num">{q.duration_ms:.1f}</td>'
+        f'<td class="name"><code>{html.escape(q.sql[:200])}</code></td>'
+        '</tr>'
+        for q in slowest
+    )
+    npo_rows = '\n'.join(
+        '<tr>'
+        f'<td class="name">{html.escape(n.method)} {html.escape(n.route)}</td>'
+        f'<td class="num">{n.max_count}</td>'
+        f'<td class="num">{n.requests_affected}</td>'
+        f'<td class="num">{n.total_ms:.1f}</td>'
+        f'<td class="name"><code>{html.escape(n.normalized_sql[:200])}</code></td>'
+        '</tr>'
+        for n in result.n_plus_one
+    )
+    npo_block = (
+        f"""
+  <h3>Possible N+1 queries <span class="muted">({len(result.n_plus_one)})</span></h3>
+  <table>
+    <thead><tr><th>Endpoint</th><th class="num">Max/req</th><th class="num">Requests</th><th class="num">Total ms</th><th>Query shape</th></tr></thead>
+    <tbody>{npo_rows}</tbody>
+  </table>
+"""
+        if result.n_plus_one
+        else '<p class="muted">No repeated-query (N+1) patterns detected.</p>'
+    )
+    return f"""
+  <h2>Database <span class="muted">({result.query_count} queries, {result.query_total_ms:.1f} ms total)</span></h2>
+  {npo_block}
+  <h3>Slowest queries</h3>
+  <table>
+    <thead><tr><th class="num">ms</th><th>Query</th></tr></thead>
+    <tbody>{slow_rows}</tbody>
+  </table>
+"""
+
+
+def _hotspot_lints_section(result: ProfileResult) -> str:
+    if not result.hotspot_lints:
+        return ''
+    blocks = []
+    for h in result.hotspot_lints:
+        items = '\n'.join(
+            f'<li><strong>{html.escape(f["code"])}</strong> '
+            f'<span class="muted">line {f["line"]}</span> — {html.escape(f["message"])}</li>'
+            for f in h.findings
+        )
+        blocks.append(
+            f'<div class="hotspot"><div class="hot-head">'
+            f'<strong>{html.escape(h.function)}</strong> '
+            f'<span class="muted">{html.escape(h.file)} · {h.self_ms:.1f} ms self</span></div>'
+            f'<ul>{items}</ul></div>'
+        )
+    return f"""
+  <h2>Hotspots with lint findings <span class="muted">(hot code that also trips a static rule)</span></h2>
+  {''.join(blocks)}
+"""
+
+
 def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
     """Render a self-contained HTML report."""
     peak_mb = result.peak_rss_bytes / (1024 * 1024)
@@ -402,6 +654,11 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   .axis {{ font-size: 10px; fill: #9ca3af; }}
   .muted {{ color: #9ca3af; }}
   .warn {{ color: #b45309; }}
+  h3 {{ font-size: 13px; color: #374151; margin-top: 16px; }}
+  code {{ font-family: ui-monospace, monospace; font-size: 12px; }}
+  .hotspot {{ background: #fff; border: 1px solid #e5e7eb; border-left: 3px solid #f08c00; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }}
+  .hotspot ul {{ margin: 6px 0 0; padding-left: 18px; }}
+  .hot-head {{ margin-bottom: 2px; }}
   details pre {{ background: #fff; border: 1px solid #e5e7eb; padding: 12px; overflow: auto; max-height: 320px; font-size: 12px; }}
 </style>
 </head>
@@ -419,6 +676,8 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   <h2>Memory over time</h2>
   {_rss_svg(result.rss)}
   {_requests_section(result)}
+  {_database_section(result)}
+  {_hotspot_lints_section(result)}
   <h2>Top functions by self time</h2>
   <table>
     <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th>Self %</th></tr></thead>
@@ -461,6 +720,7 @@ def profile_script(
     finally:
         sys.argv = saved_argv
     assert prof.result is not None
+    analyze_hotspots(prof.result)
     return prof.result
 
 

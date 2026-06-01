@@ -28,6 +28,12 @@ struct Span {
     end_ms: f64,
 }
 
+struct Query {
+    ts_ms: f64,
+    sql: String,
+    duration_ms: f64,
+}
+
 struct Samples {
     start: Instant,
     frame_table: Vec<String>,           // interned "func\tfile\tline" entries
@@ -37,6 +43,7 @@ struct Samples {
     sample_tid: Vec<u64>,               // thread id, parallel to `stacks`
     rss: Vec<(f64, i64)>,               // (ms, bytes)
     spans: Vec<Span>,                   // request spans recorded by web middleware
+    queries: Vec<Query>,                // DB queries recorded by instrumentation
     truncated: bool,
 }
 
@@ -51,6 +58,7 @@ impl Samples {
             sample_tid: Vec::new(),
             rss: Vec::new(),
             spans: Vec::new(),
+            queries: Vec::new(),
             truncated: false,
         }
     }
@@ -226,6 +234,14 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
         d.set_item("end_ms", sp.end_ms)?;
         spans.append(d)?;
     }
+    let queries = PyList::empty(py);
+    for q in &s.queries {
+        let d = PyDict::new(py);
+        d.set_item("ts_ms", q.ts_ms)?;
+        d.set_item("sql", &q.sql)?;
+        d.set_item("duration_ms", q.duration_ms)?;
+        queries.append(d)?;
+    }
 
     let out = PyDict::new(py);
     out.set_item("frames", frames)?;
@@ -234,6 +250,7 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
     out.set_item("tids", tids)?;
     out.set_item("rss", rss)?;
     out.set_item("spans", spans)?;
+    out.set_item("queries", queries)?;
     out.set_item("duration_ms", duration_ms)?;
     out.set_item("sample_count", s.stacks.len())?;
     out.set_item("truncated", s.truncated)?;
@@ -255,6 +272,24 @@ pub fn perf_reset() {
     if let Some(s) = g.take() {
         s.stop.store(true, Ordering::Relaxed);
         // `s` (and its JoinHandle) drops here — detach, never join.
+    }
+}
+
+/// Record a database query with its duration. No-op when not running. The
+/// timestamp is taken from the sampler clock so queries align with spans.
+#[pyfunction]
+pub fn perf_record_query(sql: String, duration_ms: f64) {
+    let g = slot().lock().unwrap();
+    if let Some(s) = g.as_ref() {
+        let mut sh = s.shared.lock().unwrap();
+        if sh.queries.len() < MAX_SAMPLES {
+            let ts_ms = sh.start.elapsed().as_secs_f64() * 1000.0;
+            sh.queries.push(Query {
+                ts_ms,
+                sql,
+                duration_ms,
+            });
+        }
     }
 }
 
