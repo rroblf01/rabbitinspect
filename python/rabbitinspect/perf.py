@@ -214,6 +214,9 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
             'rss': result.rss,
         }
     )
+    # Escape so embedded data can't break out of the <script> block
+    # (e.g. a function literally named "</script>").
+    payload = payload.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
     trunc = (
         '<p class="warn">⚠ Sample buffer was truncated; results are partial.</p>'
         if result.truncated
