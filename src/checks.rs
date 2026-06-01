@@ -9,6 +9,8 @@ pub struct UnusedVarsChecker {
     used: Vec<String>,
     scope_stack: Vec<(Vec<(String, usize, usize)>, Vec<String>)>,
     dataclass_depth: usize,
+    next_scope_is_class: bool,
+    scope_types: Vec<bool>,
 }
 
 impl UnusedVarsChecker {
@@ -18,7 +20,12 @@ impl UnusedVarsChecker {
             used: Vec::new(),
             scope_stack: Vec::new(),
             dataclass_depth: 0,
+            next_scope_is_class: false,
+            scope_types: Vec::new(),
         }
+    }
+    fn in_class_body(&self) -> bool {
+        self.scope_types.last().copied().unwrap_or(false)
     }
 
     fn collect_names_from_target(&mut self, expr: &Expr, line_starts: &[usize]) {
@@ -63,6 +70,8 @@ impl UnusedVarsChecker {
 
 impl Checker for UnusedVarsChecker {
     fn enter_scope(&mut self) {
+        self.scope_types.push(self.next_scope_is_class);
+        self.next_scope_is_class = false;
         self.scope_stack.push((
             std::mem::take(&mut self.assigned),
             std::mem::take(&mut self.used),
@@ -73,6 +82,7 @@ impl Checker for UnusedVarsChecker {
         if self.dataclass_depth > 0 {
             self.dataclass_depth -= 1;
         }
+        self.scope_types.pop();
         let used_set: FxHashSet<&str> = self.used.iter().map(|s| s.as_str()).collect();
         for (name, line, col) in &self.assigned {
             if name.starts_with('_') {
@@ -134,24 +144,29 @@ impl Checker for UnusedVarsChecker {
                 }
             }
             Stmt::ClassDef(cd) => {
+                self.next_scope_is_class = true;
                 if Self::is_dataclass(&cd.decorator_list) {
                     self.dataclass_depth += 1;
                 }
             }
             Stmt::Assign(a) => {
-                for target in &a.targets {
-                    self.collect_names_from_target(target, line_starts);
+                if !self.in_class_body() {
+                    for target in &a.targets {
+                        self.collect_names_from_target(target, line_starts);
+                    }
                 }
             }
             Stmt::AnnAssign(a) => {
-                if self.dataclass_depth == 0 {
+                if self.dataclass_depth == 0 && !self.in_class_body() {
                     self.collect_names_from_target(&a.target, line_starts);
                 }
             }
             Stmt::AugAssign(a) => {
-                self.collect_names_from_target(&a.target, line_starts);
-                if let Expr::Name(n) = &*a.target {
-                    self.used.push(n.id.to_string());
+                if !self.in_class_body() {
+                    self.collect_names_from_target(&a.target, line_starts);
+                    if let Expr::Name(n) = &*a.target {
+                        self.used.push(n.id.to_string());
+                    }
                 }
             }
             Stmt::For(f) => {
@@ -176,6 +191,7 @@ impl Checker for UnusedVarsChecker {
             }
             Stmt::Import(i) => {
                 for alias in &i.names {
+                    if alias.name.as_str() == "*" { continue; }
                     let name = alias
                         .asname
                         .clone()
@@ -188,6 +204,7 @@ impl Checker for UnusedVarsChecker {
             }
             Stmt::ImportFrom(i) => {
                 for alias in &i.names {
+                    if alias.name.as_str() == "*" { continue; }
                     let name = alias
                         .asname
                         .clone()
@@ -4011,6 +4028,29 @@ impl Checker for AnyAnnotationChecker {
 
 // ── RAB095: Type annotation vs default value mismatch ─────────────────────
 
+fn annotation_includes_none(ann: &Expr) -> bool {
+    match ann {
+        Expr::Name(n) => n.id.as_str() == "Optional",
+        Expr::Constant(c) => matches!(c.value, Constant::None),
+        Expr::Subscript(s) => {
+            if let Expr::Name(n) = &*s.value {
+                if n.id.as_str() == "Optional" { return true; }
+                if n.id.as_str() == "Union" {
+                    if let Expr::Tuple(t) = &*s.slice {
+                        return t.elts.iter().any(|e| annotation_includes_none(e));
+                    }
+                }
+            }
+            false
+        }
+        Expr::BinOp(b) => {
+            b.op == Operator::BitOr
+                && (annotation_includes_none(&b.left) || annotation_includes_none(&b.right))
+        }
+        _ => false,
+    }
+}
+
 pub struct TypeDefaultMismatchChecker;
 
 impl Checker for TypeDefaultMismatchChecker {
@@ -4026,6 +4066,8 @@ impl Checker for TypeDefaultMismatchChecker {
             let is_none_default = matches!(&**default, Expr::Constant(cc) if matches!(&cc.value, Constant::None));
             let is_mutable_default = matches!(&**default, Expr::List(_) | Expr::Dict(_) | Expr::Set(_));
             if !is_none_default && !is_mutable_default { continue; }
+
+            if is_none_default && annotation_includes_none(annotation) { continue; }
 
             let annotation_is_concrete = |e: &Expr| -> bool {
                 match e {
@@ -4344,6 +4386,7 @@ impl Checker for UnusedImportChecker {
         match stmt {
             Stmt::Import(i) => {
                 for alias in &i.names {
+                    if alias.name.as_str() == "*" { continue; }
                     let name = alias.asname.clone().unwrap_or_else(|| alias.name.clone());
                     let short = name.split('.').next().unwrap_or(&name).to_string();
                     let range = alias.range();
@@ -4353,6 +4396,7 @@ impl Checker for UnusedImportChecker {
             }
             Stmt::ImportFrom(i) => {
                 for alias in &i.names {
+                    if alias.name.as_str() == "*" { continue; }
                     let name = alias.asname.clone().unwrap_or_else(|| alias.name.clone());
                     let range = alias.range();
                     let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
