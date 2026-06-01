@@ -668,7 +668,7 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
     for f in functions[:limit]:
         bar = min(100.0, f.self_pct)
         has_detail = bool(f.line_times)
-        marker = '▸ ' if has_detail else ''
+        marker = '<span class="tw">▸</span> ' if has_detail else ''
         rows.append(
             f'<tr class="{"fn" if has_detail else ""}">'
             f'<td class="name">{marker}{html.escape(f.name)}</td>'
@@ -1293,7 +1293,7 @@ def render_html(
   </details>
 
   <script type="application/json" id="rabbitinspect-perf-data">{payload}</script>
-  <script>document.querySelectorAll("tr.fn").forEach(function(r){{r.addEventListener("click",function(){{var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail"))d.style.display=d.style.display==="none"?"table-row":"none";}});}});</script>
+  <script>document.querySelectorAll("tr.fn").forEach(function(r){{r.addEventListener("click",function(){{var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail")){{var open=d.style.display==="none";d.style.display=open?"table-row":"none";var tw=r.querySelector(".tw");if(tw)tw.textContent=open?"▾":"▸";}}}});}});</script>
 </main>
 </body>
 </html>
