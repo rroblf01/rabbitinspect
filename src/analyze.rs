@@ -37,6 +37,7 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB123", "RAB124",
     "RAB126",
     "RAB127", "RAB128",
+    "RAB129",
 ];
 
 #[derive(Debug, Clone)]
@@ -87,7 +88,7 @@ pub fn count_fn_args(args: &Arguments) -> usize {
 
 fn compute_line_starts(source: &str) -> Vec<usize> {
     std::iter::once(0)
-        .chain(source.chars().enumerate().filter_map(|(i, c)| {
+        .chain(source.char_indices().filter_map(|(i, c)| {
             if c == '\n' {
                 Some(i + 1)
             } else {
@@ -243,6 +244,7 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut duplicate_key = crate::checks::DuplicateKeyChecker;
     let mut broad_except = crate::checks::BroadExceptChecker;
     let mut unnecessary_pass = crate::checks::UnnecessaryPassChecker;
+    let mut log_fstring = crate::checks::LoggingFstringChecker;
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -358,6 +360,7 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut duplicate_key,
         &mut broad_except,
         &mut unnecessary_pass,
+        &mut log_fstring,
     ];
 
     for c in checkers.iter_mut() {
@@ -667,6 +670,15 @@ fn walk_expr(
             }
         }
         Expr::Constant(_) => {}
+        Expr::JoinedStr(js) => {
+            for val in &js.values {
+                walk_expr(val, source, line_starts, checkers, findings);
+            }
+        }
+        Expr::FormattedValue(fv) => {
+            walk_expr(&fv.value, source, line_starts, checkers, findings);
+            walk_expr_opt(fv.format_spec.as_deref(), source, line_starts, checkers, findings);
+        }
         Expr::Attribute(a) => {
             walk_expr(&a.value, source, line_starts, checkers, findings);
         }

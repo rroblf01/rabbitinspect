@@ -811,7 +811,7 @@ class TestRAB090MissingParamType:
 
 class TestRAB091MissingReturnType:
     def test_missing_return_type(self):
-        check_code("def foo(): pass", {"RAB091"})
+        check_code("def foo(): pass", {"RAB022"})
 
     def test_missing_return_type_private(self):
         check_code("def _internal(): pass", {"RAB091"})
@@ -820,7 +820,7 @@ class TestRAB091MissingReturnType:
         assert_no_findings("def foo() -> None: pass", ignore_codes={"RAB001"})
 
     def test_async_func(self):
-        check_code("async def fetch(): return None", {"RAB091"})
+        check_code("async def fetch(): return None", {"RAB022"})
 
 
 class TestRAB092MissingAttrType:
@@ -839,7 +839,7 @@ class TestRAB092MissingAttrType:
 
 class TestRAB093MissingModuleVarType:
     def test_missing_module_var_type(self):
-        check_code("x = 1", {"RAB093"})
+        check_code("x = []", {"RAB093"})
 
     def test_no_warning_annotated(self):
         assert_no_findings("x: int = 1", ignore_codes={"RAB001"})

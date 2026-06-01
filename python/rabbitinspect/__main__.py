@@ -10,7 +10,31 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib  # Python 3.10 fallback
 
+try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("rabbitinspect")
+except Exception:
+    __version__ = "0.0.0"
+
 from rabbitinspect import analyze_code, apply_fixes
+
+DEFAULT_EXCLUDE = [
+    '.venv',
+    '.git',
+    '__pycache__',
+    '*.pyc',
+    '.pytest_cache',
+    '.ruff_cache',
+    '.mypy_cache',
+    '.hypothesis',
+    'node_modules',
+    '.eggs',
+    '*.egg-info',
+    'dist',
+    'build',
+    '.tox',
+    '.nox',
+]
 
 
 def parse_pyproject_toml(path: str | None = None) -> dict:
@@ -78,16 +102,110 @@ def format_finding(file_path: str, finding: dict) -> str:
     )
 
 
-def collect_python_files(paths: list[str]) -> list[str]:
+def _compile_gitignore_pattern(pattern: str) -> re.Pattern | None:
+    p = pattern.strip()
+    if not p or p.startswith('#'):
+        return None
+
+    negate = p.startswith('!')
+    if negate:
+        p = p[1:].strip()
+
+    dir_only = p.endswith('/')
+    if dir_only:
+        p = p.rstrip('/')
+
+    anchored = p.startswith('/')
+    if anchored:
+        p = p[1:]
+
+    # remaining '/' means anchored to the gitignore root
+    anchored = anchored or '/' in p
+
+    parts = []
+    i = 0
+    while i < len(p):
+        c = p[i]
+        if c == '*':
+            if i + 1 < len(p) and p[i + 1] == '*':
+                if i + 2 < len(p) and p[i + 2] == '/':
+                    parts.append(r'(?:.+/)?')
+                    i += 3
+                else:
+                    parts.append(r'.*')
+                    i += 2
+            else:
+                parts.append(r'[^/]*')
+                i += 1
+        elif c == '?':
+            parts.append(r'[^/]')
+            i += 1
+        elif c in ('.', '+', '^', '$', '{', '}', '(', ')', '|', '\\'):
+            parts.append('\\' + c)
+            i += 1
+        elif c == '[':
+            j = i + 1
+            if j < len(p) and p[j] in ('!', '^'):
+                j += 1
+            if j < len(p) and p[j] == ']':
+                j += 1
+            while j < len(p) and p[j] != ']':
+                j += 1
+            parts.append(p[i:j + 1])
+            i = j + 1
+        else:
+            parts.append(re.escape(c))
+            i += 1
+
+    regex_str = ''.join(parts)
+
+    if anchored:
+        regex_str = '^' + regex_str + '$'
+    else:
+        regex_str = rf'(?:^|.*\/){regex_str}(?:\/.*)?$'
+
+    return re.compile(regex_str)
+
+
+def _build_exclude_matcher(patterns: list[str]) -> callable:
+    compiled = []
+    for pat in patterns:
+        negate = pat.strip().startswith('!')
+        rx = _compile_gitignore_pattern(pat)
+        if rx is not None:
+            compiled.append((rx, negate))
+
+    if not compiled:
+        return lambda _: False
+
+    def matches(path: pathlib.Path) -> bool:
+        rel = path.as_posix()
+        excluded = False
+        for rx, negate in compiled:
+            if rx.search(rel):
+                excluded = not negate
+        return excluded
+
+    return matches
+
+
+def collect_python_files(paths: list[str], exclude: list[str] | None = None) -> list[str]:
+    matcher = _build_exclude_matcher(exclude or [])
+
     files: list[str] = []
     for p in paths:
-        pobj = pathlib.Path(p)
+        pobj = pathlib.Path(p).resolve()
         if pobj.is_file():
-            if pobj.suffix == ".py":
-                files.append(str(pobj.resolve()))
+            if pobj.suffix == ".py" and not matcher(pobj.relative_to(pobj.parent)):
+                files.append(str(pobj))
         elif pobj.is_dir():
             for py_file in sorted(pobj.rglob("*.py")):
-                files.append(str(py_file.resolve()))
+                try:
+                    rel = py_file.relative_to(pobj)
+                except ValueError:
+                    rel = py_file
+                if not matcher(rel):
+                    files.append(str(py_file.resolve()))
     return files
 
 
@@ -264,6 +382,9 @@ EXPLANATIONS: dict[str, str] = {
     "RAB127": "Loop has both 'break' and 'else' clause. The 'else' runs only if no break "
                "occurs; if the else is always reached, remove the break.",
     "RAB128": "Use 'x not in y' instead of 'not x in y' (PEP 8 style).",
+    "RAB129": "Use lazy '%s' formatting instead of an f-string in a logging call. "
+               "f-strings are evaluated eagerly even when the log level is disabled, "
+               "while lazy formatting defers interpolation to the logging system.",
 }
 
 ALL_CODES = sorted(EXPLANATIONS.keys())
@@ -332,15 +453,36 @@ def main() -> None:
         help="Show detailed explanation for a check code (e.g. 'RAB002')",
     )
     parser.add_argument(
+        "--exclude",
+        action="append",
+        dest="exclude",
+        help="Pattern to exclude files/directories (gitignore-style, can be specified multiple times)",
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        dest="include",
+        help="Pattern to include (override exclude, gitignore-style, can be specified multiple times)",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         dest="show_list",
         help="List all available check codes with descriptions",
     )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show version and exit",
+    )
 
     cli_args = parser.parse_args()
 
     use_color = not cli_args.no_color and sys.stdout.isatty()
+
+    if cli_args.version:
+        print(f"rabbitinspect {__version__}")
+        return
 
     if cli_args.explain:
         code = cli_args.explain.strip().upper()
@@ -361,13 +503,37 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    files = collect_python_files(cli_args.paths)
+    config = parse_pyproject_toml()
+
+    exclude_patterns: list[str] = list(DEFAULT_EXCLUDE)
+    if cli_args.include:
+        for pat in cli_args.include:
+            ipat = pat.strip()
+            if not ipat.startswith('!'):
+                ipat = '!' + ipat
+            exclude_patterns.append(ipat)
+    if cli_args.exclude:
+        for pat in cli_args.exclude:
+            if pat not in exclude_patterns:
+                exclude_patterns.append(pat)
+    if "include" in config:
+        for pat in config["include"]:
+            ipat = pat.strip()
+            if not ipat.startswith('!'):
+                ipat = '!' + ipat
+            if ipat not in exclude_patterns:
+                exclude_patterns.append(ipat)
+    if "exclude" in config:
+        for pat in config["exclude"]:
+            if pat not in exclude_patterns:
+                exclude_patterns.append(pat)
+
+    files = collect_python_files(cli_args.paths, exclude=exclude_patterns)
 
     if not files:
         print("No Python files found.", file=sys.stderr)
         sys.exit(1)
 
-    config = parse_pyproject_toml()
     select_codes: set[str] | None = None
     ignore_codes: set[str] | None = None
 
@@ -385,6 +551,7 @@ def main() -> None:
     all_results: list[dict] = []
     total_findings = 0
     total_fixed = 0
+    fixable_files = 0
 
     for file_path in files:
         try:
@@ -402,6 +569,8 @@ def main() -> None:
 
         total_findings += len(findings)
         fixable = [f for f in findings if f.get("fix")]
+        if fixable and not cli_args.fix:
+            fixable_files += 1
 
         if cli_args.format == "json":
             for f in findings:
@@ -446,10 +615,13 @@ def main() -> None:
             msg = f"\x1b[32m{msg}\x1b[0m"
         print(msg)
     else:
+        file_count = len([f for f in files if os.path.exists(f)])
         summary = f"Found {total_findings} issue(s)"
         if total_fixed:
             summary += f", fixed {total_fixed}"
-        summary += f" in {len([f for f in files if os.path.exists(f)])} file(s)"
+        summary += f" in {file_count} file(s)"
+        if fixable_files:
+            summary += f", {fixable_files} file(s) fixable with --fix"
         if use_color:
             summary = f"\x1b[33m{summary}\x1b[0m"
         print(summary)

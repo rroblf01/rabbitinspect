@@ -8,6 +8,7 @@ pub struct UnusedVarsChecker {
     assigned: Vec<(String, usize, usize)>,
     used: Vec<String>,
     scope_stack: Vec<(Vec<(String, usize, usize)>, Vec<String>)>,
+    dataclass_depth: usize,
 }
 
 impl UnusedVarsChecker {
@@ -16,6 +17,7 @@ impl UnusedVarsChecker {
             assigned: Vec::new(),
             used: Vec::new(),
             scope_stack: Vec::new(),
+            dataclass_depth: 0,
         }
     }
 
@@ -42,8 +44,20 @@ impl UnusedVarsChecker {
         }
     }
 
-    fn add_arg(&mut self, name: &str) {
-        self.assigned.push((name.to_string(), 0, 0));
+    fn add_arg(&mut self, name: &str, line: usize, col: usize) {
+        if name == "self" || name == "cls" { return; }
+        self.assigned.push((name.to_string(), line, col));
+    }
+
+    fn is_dataclass(decorator_list: &[Expr]) -> bool {
+        decorator_list.iter().any(|d| {
+            if let Expr::Name(n) = d { n.id.as_str() == "dataclass" }
+            else if let Expr::Call(c) = d {
+                if let Expr::Name(n) = &*c.func { n.id.as_str() == "dataclass" }
+                else { false }
+            }
+            else { false }
+        })
     }
 }
 
@@ -56,6 +70,9 @@ impl Checker for UnusedVarsChecker {
     }
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        if self.dataclass_depth > 0 {
+            self.dataclass_depth -= 1;
+        }
         let used_set: FxHashSet<&str> = self.used.iter().map(|s| s.as_str()).collect();
         for (name, line, col) in &self.assigned {
             if name.starts_with('_') {
@@ -84,24 +101,41 @@ impl Checker for UnusedVarsChecker {
         match stmt {
             Stmt::FunctionDef(f) => {
                 for arg in iter_fn_args(&f.args) {
-                    self.add_arg(&arg.def.arg);
+                    let pos = text_size_to_usize(arg.def.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&arg.def.arg, line, col);
                 }
                 if let Some(vararg) = &f.args.vararg {
-                    self.add_arg(&vararg.arg);
+                    let pos = text_size_to_usize(vararg.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&vararg.arg, line, col);
                 }
                 if let Some(kwarg) = &f.args.kwarg {
-                    self.add_arg(&kwarg.arg);
+                    let pos = text_size_to_usize(kwarg.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&kwarg.arg, line, col);
                 }
             }
             Stmt::AsyncFunctionDef(f) => {
                 for arg in iter_fn_args(&f.args) {
-                    self.add_arg(&arg.def.arg);
+                    let pos = text_size_to_usize(arg.def.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&arg.def.arg, line, col);
                 }
                 if let Some(vararg) = &f.args.vararg {
-                    self.add_arg(&vararg.arg);
+                    let pos = text_size_to_usize(vararg.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&vararg.arg, line, col);
                 }
                 if let Some(kwarg) = &f.args.kwarg {
-                    self.add_arg(&kwarg.arg);
+                    let pos = text_size_to_usize(kwarg.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.add_arg(&kwarg.arg, line, col);
+                }
+            }
+            Stmt::ClassDef(cd) => {
+                if Self::is_dataclass(&cd.decorator_list) {
+                    self.dataclass_depth += 1;
                 }
             }
             Stmt::Assign(a) => {
@@ -110,7 +144,9 @@ impl Checker for UnusedVarsChecker {
                 }
             }
             Stmt::AnnAssign(a) => {
-                self.collect_names_from_target(&a.target, line_starts);
+                if self.dataclass_depth == 0 {
+                    self.collect_names_from_target(&a.target, line_starts);
+                }
             }
             Stmt::AugAssign(a) => {
                 self.collect_names_from_target(&a.target, line_starts);
@@ -145,8 +181,9 @@ impl Checker for UnusedVarsChecker {
                         .clone()
                         .unwrap_or_else(|| alias.name.clone());
                     let short = name.split('.').next().unwrap_or(&name).to_string();
-                    // Use the alias range for position, or just add with 0
-                    self.assigned.push((short, 0, 0));
+                    let pos = text_size_to_usize(alias.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.assigned.push((short, line, col));
                 }
             }
             Stmt::ImportFrom(i) => {
@@ -155,14 +192,18 @@ impl Checker for UnusedVarsChecker {
                         .asname
                         .clone()
                         .unwrap_or_else(|| alias.name.clone());
-                    self.assigned.push((name.to_string(), 0, 0));
+                    let pos = text_size_to_usize(alias.range().start());
+                    let (line, col) = byte_to_line_col(pos, line_starts);
+                    self.assigned.push((name.to_string(), line, col));
                 }
             }
             Stmt::Try(t) => {
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
                     if let Some(name) = &h.name {
-                        self.assigned.push((name.to_string(), 0, 0));
+                        let pos = text_size_to_usize(h.range().start());
+                        let (line, col) = byte_to_line_col(pos, line_starts);
+                        self.assigned.push((name.to_string(), line, col));
                     }
                 }
             }
@@ -3807,6 +3848,8 @@ impl Checker for ParamTypeChecker {
         // RAB090: Missing parameter type annotations (public functions only)
         if is_public {
             for arg in iter_fn_args(args) {
+                let pname = arg.def.arg.as_str();
+                if pname == "self" || pname == "cls" { continue; }
                 if arg.def.annotation.is_none() {
                     let range = arg.def.range();
                     let start = text_size_to_usize(range.start());
@@ -3823,8 +3866,8 @@ impl Checker for ParamTypeChecker {
             }
         }
 
-        // RAB091: Missing return type annotation (all functions)
-        if returns.is_none() {
+        // RAB091: Missing return type annotation (non-public functions only; public is RAB022)
+        if !is_public && returns.is_none() {
             let range = stmt.range();
             let start = text_size_to_usize(range.start());
             let end = text_size_to_usize(range.end());
@@ -3902,6 +3945,14 @@ impl Checker for ModuleVarTypeChecker {
         if a.targets.len() != 1 { return; }
         let Expr::Name(n) = &a.targets[0] else { return };
         if n.id.as_str().starts_with('_') { return; }
+
+        // Skip assignments where the type is obvious from the value
+        if matches!(
+            a.value.as_ref(),
+            Expr::Constant(_) | Expr::Call(_) | Expr::Name(_)
+        ) {
+            return;
+        }
 
         let range = n.range();
         let start = text_size_to_usize(range.start());
@@ -4952,5 +5003,115 @@ impl Checker for TypeUnionChecker {
                 self.check_expr(annotation, source, line_starts, findings);
             }
         }
+    }
+}
+
+// ── RAB129: f-string in logging call ─────────────────────────────────────
+
+pub struct LoggingFstringChecker;
+
+const LOG_METHODS: &[&str] = &["debug", "info", "warning", "error", "critical", "exception", "log"];
+
+fn escape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '%' => out.push_str("%%"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+impl Checker for LoggingFstringChecker {
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(c) = expr else { return };
+        let Expr::Attribute(a) = &*c.func else { return };
+        if !LOG_METHODS.contains(&a.attr.as_str()) { return; }
+        let msg_arg = if a.attr.as_str() == "log" {
+            c.args.get(1)
+        } else {
+            c.args.first()
+        };
+        let Some(msg_arg) = msg_arg else { return };
+        let Expr::JoinedStr(js) = msg_arg else { return };
+
+        let arg_range = msg_arg.range();
+        let start = text_size_to_usize(arg_range.start());
+        let end = text_size_to_usize(arg_range.end());
+
+        let mut new_fmt = String::from("\"");
+        let mut extra_args: Vec<String> = Vec::new();
+
+        for val in &js.values {
+            match val {
+                Expr::Constant(cnst) => {
+                    if let Constant::Str(s) = &cnst.value {
+                        new_fmt.push_str(&escape_str(s));
+                    }
+                }
+                Expr::FormattedValue(fv) => {
+                    let spec_char = match fv.conversion {
+                        ConversionFlag::Repr => 'r',
+                        ConversionFlag::Ascii => 'a',
+                        _ => 's',
+                    };
+                    let spec_text: Option<String> = fv.format_spec.as_ref().and_then(|se| {
+                        match se.as_ref() {
+                            Expr::Constant(sc) => {
+                                if let Constant::Str(s) = &sc.value { Some(s.clone()) } else { None }
+                            }
+                            Expr::JoinedStr(js) => {
+                                let mut t = String::new();
+                                for v in &js.values {
+                                    if let Expr::Constant(c) = v {
+                                        if let Constant::Str(s) = &c.value {
+                                            t.push_str(s);
+                                        }
+                                    }
+                                }
+                                if t.is_empty() { None } else { Some(t) }
+                            }
+                            _ => None,
+                        }
+                    });
+                    if let Some(st) = &spec_text {
+                        new_fmt.push('%');
+                        new_fmt.push_str(st);
+                    } else {
+                        new_fmt.push('%');
+                        new_fmt.push(spec_char);
+                    }
+                    let es = text_size_to_usize(fv.value.range().start());
+                    let ee = text_size_to_usize(fv.value.range().end());
+                    extra_args.push(source[es..ee].to_string());
+                }
+                _ => {}
+            }
+        }
+
+        new_fmt.push('"');
+
+        let replacement = if extra_args.is_empty() {
+            new_fmt
+        } else {
+            new_fmt.push_str(", ");
+            new_fmt.push_str(&extra_args.join(", "));
+            new_fmt
+        };
+
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB129".to_string(),
+            message: "Use lazy '%s' formatting instead of f-string in logging call".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
     }
 }
