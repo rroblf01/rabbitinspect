@@ -23,3 +23,5 @@ target/
 # IDE
 .vscode/
 .idea/
+
+.claude/

@@ -10,10 +10,8 @@ pub fn apply_fixes(source: &str, fixes: &[&Fix]) -> String {
     let mut result = String::with_capacity(source.len());
     let mut pos = 0usize;
     for fix in &sorted {
+        // Skip any fix that overlaps an already-applied one.
         if fix.start < pos {
-            if fix.end <= pos {
-                continue;
-            }
             continue;
         }
         result.push_str(&source[pos..fix.start]);

@@ -290,6 +290,7 @@ impl Checker for UnusedVarsChecker {
 pub struct NoneComparisonChecker;
 
 impl Checker for NoneComparisonChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             for (i, op) in c.ops.iter().enumerate() {
@@ -390,6 +391,7 @@ fn get_len_arg(source: &str, len_call: &Expr) -> String {
 }
 
 impl Checker for LenZeroChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             if c.ops.len() != 1 || c.comparators.len() != 1 {
@@ -462,6 +464,7 @@ fn get_call_func_name(func: &Expr) -> Option<String> {
 }
 
 impl Checker for ListGenChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             let func_name = get_call_func_name(&c.func);
@@ -512,6 +515,7 @@ impl Checker for ListGenChecker {
 pub struct DictKeysChecker;
 
 impl Checker for DictKeysChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let iter = match stmt {
             Stmt::For(f) => &f.iter,
@@ -579,6 +583,7 @@ fn expr_to_source(source: &str, expr: &Expr) -> String {
 }
 
 impl Checker for TypeComparisonChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             if c.ops.len() == 1 && c.comparators.len() == 1 {
@@ -619,6 +624,7 @@ impl Checker for TypeComparisonChecker {
 pub struct UnnecessaryElseChecker;
 
 impl Checker for UnnecessaryElseChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::If(i) = stmt {
             if !i.orelse.is_empty() {
@@ -699,6 +705,7 @@ impl Checker for UnnecessaryElseChecker {
 pub struct EnumerateChecker;
 
 impl Checker for EnumerateChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (iter, _) = match stmt {
             Stmt::For(f) => (&f.iter, "for"),
@@ -738,6 +745,7 @@ impl Checker for EnumerateChecker {
 pub struct StrConcatChecker;
 
 impl Checker for StrConcatChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::AugAssign(a) = stmt {
             if !matches!(a.op, Operator::Add) {
@@ -769,6 +777,7 @@ impl Checker for StrConcatChecker {
 pub struct ListSetChecker;
 
 impl Checker for ListSetChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             let is_set = matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "set");
@@ -802,6 +811,7 @@ impl Checker for ListSetChecker {
 pub struct DictKeysInChecker;
 
 impl Checker for DictKeysInChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             if c.ops.len() == 1 && matches!(c.ops[0], CmpOp::In | CmpOp::NotIn) && c.comparators.len() == 1 {
@@ -840,6 +850,7 @@ impl Checker for DictKeysInChecker {
 pub struct RedundantCallChecker;
 
 impl Checker for RedundantCallChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             if matches!(&*c.func, Expr::Attribute(a) if a.attr.as_str() == "call" && c.args.is_empty()) {
@@ -866,6 +877,7 @@ impl Checker for RedundantCallChecker {
 pub struct BoolComparisonChecker;
 
 impl Checker for BoolComparisonChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             if c.ops.len() != 1 || c.comparators.len() != 1 {
@@ -919,6 +931,7 @@ impl Checker for BoolComparisonChecker {
 pub struct BoolReturnChecker;
 
 impl Checker for BoolReturnChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::If(i) = stmt {
             if i.orelse.is_empty() || i.body.len() != 1 || i.orelse.len() != 1 {
@@ -980,6 +993,7 @@ impl Checker for BoolReturnChecker {
 pub struct BoolCallChecker;
 
 impl Checker for BoolCallChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             if !matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "bool") {
@@ -1014,6 +1028,7 @@ impl Checker for BoolCallChecker {
 pub struct AssertConstantChecker;
 
 impl Checker for AssertConstantChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::Assert(a) = stmt {
             let is_true = matches!(&*a.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
@@ -1148,6 +1163,7 @@ impl Checker for ComplexityChecker {
 pub struct MutableDefaultChecker;
 
 impl Checker for MutableDefaultChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let args = match stmt {
             Stmt::FunctionDef(f) => &f.args,
@@ -1177,6 +1193,7 @@ impl Checker for MutableDefaultChecker {
 pub struct BareExceptChecker;
 
 impl Checker for BareExceptChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::Try(t) = stmt {
             for handler in &t.handlers {
@@ -1202,6 +1219,7 @@ impl Checker for BareExceptChecker {
 pub struct BareExceptPassChecker;
 
 impl Checker for BareExceptPassChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::Try(t) = stmt {
             for handler in &t.handlers {
@@ -1229,6 +1247,7 @@ impl Checker for BareExceptPassChecker {
 pub struct ClassObjectChecker;
 
 impl Checker for ClassObjectChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::ClassDef(c) = stmt {
             for base in &c.bases {
@@ -1253,6 +1272,7 @@ impl Checker for ClassObjectChecker {
 pub struct FormatCallChecker;
 
 impl Checker for FormatCallChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             if let Expr::Attribute(a) = &*c.func {
@@ -1289,6 +1309,7 @@ impl FunctionLengthChecker {
 }
 
 impl Checker for FunctionLengthChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) {
         self.scope_stack.push(std::mem::replace(&mut self.count, 0));
     }
@@ -1334,6 +1355,7 @@ impl Checker for FunctionLengthChecker {
 pub struct TooManyParamsChecker;
 
 impl Checker for TooManyParamsChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, _line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (args, name) = match stmt {
             Stmt::FunctionDef(f) => (&f.args, &f.name),
@@ -1363,6 +1385,7 @@ impl Checker for TooManyParamsChecker {
 pub struct OsSystemChecker;
 
 impl Checker for OsSystemChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             if let Expr::Attribute(a) = &*c.func {
@@ -1387,6 +1410,7 @@ impl Checker for OsSystemChecker {
 pub struct TimeTimeChecker;
 
 impl Checker for TimeTimeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             if let Expr::Attribute(a) = &*c.func {
@@ -1411,6 +1435,7 @@ impl Checker for TimeTimeChecker {
 pub struct MissingReturnHintChecker;
 
 impl Checker for MissingReturnHintChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (name, returns, range) = match stmt {
             Stmt::FunctionDef(f) if !f.name.to_string().starts_with('_') => (&f.name, &f.returns, f.range()),
@@ -1435,6 +1460,7 @@ impl Checker for MissingReturnHintChecker {
 pub struct DeepComprehensionChecker;
 
 impl Checker for DeepComprehensionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let generators = match expr {
             Expr::ListComp(lc) => &lc.generators,
@@ -1474,6 +1500,7 @@ fn count_elif_chain(orelse: &[Stmt]) -> u32 {
 }
 
 impl Checker for LongIfChainChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::If(i) = stmt {
             let chain_len = 1 + count_elif_chain(&i.orelse);
@@ -1606,6 +1633,7 @@ impl Checker for CognitiveComplexityChecker {
 pub struct PowerOptChecker;
 
 impl Checker for PowerOptChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         match expr {
             Expr::BinOp(b) if matches!(b.op, Operator::Pow) => {
@@ -1689,6 +1717,7 @@ impl Checker for PowerOptChecker {
 pub struct MapLambdaChecker;
 
 impl Checker for MapLambdaChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Call(c) = expr {
             let func_name = get_call_func_name(&c.func);
@@ -1737,6 +1766,7 @@ impl Checker for MapLambdaChecker {
 pub struct ListToSetChecker;
 
 impl Checker for ListToSetChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Compare(c) = expr {
             for (i, op) in c.ops.iter().enumerate() {
@@ -1777,6 +1807,7 @@ impl Checker for ListToSetChecker {
 pub struct DataclassSlotsChecker;
 
 impl Checker for DataclassSlotsChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::ClassDef(cd) = stmt {
             for decorator in &cd.decorator_list {
@@ -1848,6 +1879,7 @@ impl ReCompileChecker {
 }
 
 impl Checker for ReCompileChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn enter_scope(&mut self) { self.depth += 1; }
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
 
@@ -1882,6 +1914,7 @@ impl Checker for ReCompileChecker {
 pub struct ReadlinesChecker;
 
 impl Checker for ReadlinesChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Stmt::For(f) = stmt {
             if let Expr::Call(c) = &*f.iter {
@@ -1962,6 +1995,7 @@ impl TypeUnionChecker {
 pub struct SortedListChecker;
 
 impl Checker for SortedListChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Name(n) = &*c.func else { return };
@@ -1994,6 +2028,7 @@ impl Checker for SortedListChecker {
 pub struct DictGetChecker;
 
 impl Checker for DictGetChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::If(i) = stmt else { return };
         if !i.orelse.is_empty() || i.body.len() != 1 { return; }
@@ -2036,6 +2071,7 @@ impl Checker for DictGetChecker {
 pub struct SliceCopyChecker;
 
 impl Checker for SliceCopyChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Subscript(s) = expr else { return };
         if !matches!(&*s.value, Expr::Name(_)) { return; }
@@ -2060,6 +2096,7 @@ impl Checker for SliceCopyChecker {
 pub struct NativeGenericChecker;
 
 impl Checker for NativeGenericChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Subscript(s) = expr else { return };
         let Expr::Name(n) = &*s.value else { return };
@@ -2097,6 +2134,7 @@ impl ManualListChecker {
 }
 
 impl Checker for ManualListChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.list_vars.clear(); }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
@@ -2145,6 +2183,7 @@ impl Checker for ManualListChecker {
 pub struct OpenContextChecker;
 
 impl Checker for OpenContextChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let call_expr = match stmt {
             Stmt::Expr(e) => Some(e.value.as_ref()),
@@ -2174,6 +2213,7 @@ impl Checker for OpenContextChecker {
 pub struct SortedIndex0Checker;
 
 impl Checker for SortedIndex0Checker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Subscript(s) = expr else { return };
         let is_zero = matches!(&*s.slice, Expr::Constant(cc) if matches!(&cc.value, Constant::Int(i) if *i == rustpython_ast::bigint::BigInt::from(0u64)));
@@ -2205,6 +2245,7 @@ impl Checker for SortedIndex0Checker {
 pub struct SortedIndexNeg1Checker;
 
 impl Checker for SortedIndexNeg1Checker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Subscript(s) = expr else { return };
         let is_neg_one = matches!(&*s.slice, Expr::UnaryOp(u) if matches!(u.op, UnaryOp::USub)
@@ -2237,6 +2278,7 @@ impl Checker for SortedIndexNeg1Checker {
 pub struct NotIsNoneChecker;
 
 impl Checker for NotIsNoneChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::UnaryOp(u) = expr else { return };
         if !matches!(u.op, UnaryOp::Not) { return; }
@@ -2286,6 +2328,7 @@ impl AugmentedAssignChecker {
 }
 
 impl Checker for AugmentedAssignChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Assign(a) = stmt else { return };
         if a.targets.len() != 1 { return; }
@@ -2316,6 +2359,7 @@ impl Checker for AugmentedAssignChecker {
 pub struct IsTrueChecker;
 
 impl Checker for IsTrueChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Compare(c) = expr else { return };
         if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
@@ -2349,6 +2393,7 @@ impl Checker for IsTrueChecker {
 pub struct RangeLenChecker;
 
 impl Checker for RangeLenChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::For(f) = stmt else { return };
         let Expr::Call(range_call) = &*f.iter else { return };
@@ -2378,6 +2423,7 @@ impl Checker for RangeLenChecker {
 pub struct SetdefaultChecker;
 
 impl Checker for SetdefaultChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(append_call) = expr else { return };
         let Expr::Attribute(append_attr) = &*append_call.func else { return };
@@ -2410,6 +2456,7 @@ impl Checker for SetdefaultChecker {
 pub struct TypeIsChecker;
 
 impl Checker for TypeIsChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::BoolOp(b) = expr else { return };
         if !matches!(b.op, BoolOp::Or) || b.values.len() < 2 { return; }
@@ -2456,6 +2503,7 @@ impl Checker for TypeIsChecker {
 pub struct IfNotAssignChecker;
 
 impl Checker for IfNotAssignChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::If(i) = stmt else { return };
         if !i.orelse.is_empty() || i.body.len() != 1 { return; }
@@ -2554,6 +2602,7 @@ fn contains_name_ref(expr: &Expr, name: &str) -> bool {
 pub struct UnusedLoopVarChecker;
 
 impl Checker for UnusedLoopVarChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (target_expr, body, orelse) = match stmt {
             Stmt::For(f) => (&f.target, &f.body, &f.orelse),
@@ -2669,6 +2718,7 @@ fn stmt_contains_name_ref(stmt: &Stmt, name: &str) -> bool {
 pub struct NestedWithChecker;
 
 impl Checker for NestedWithChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::With(w) = stmt else { return };
         if w.body.len() != 1 { return; }
@@ -2693,6 +2743,7 @@ impl Checker for NestedWithChecker {
 pub struct StartswithOrChecker;
 
 impl Checker for StartswithOrChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::BoolOp(b) = expr else { return };
         if !matches!(b.op, BoolOp::Or) || b.values.len() < 2 { return; }
@@ -2742,6 +2793,7 @@ impl Checker for StartswithOrChecker {
 pub struct ReturnTernaryChecker;
 
 impl Checker for ReturnTernaryChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Return(r) = stmt else { return };
         let Some(ret_val) = &r.value else { return };
@@ -2798,6 +2850,7 @@ fn has_break_stmt(stmts: &[Stmt]) -> bool {
 pub struct InfiniteWhileChecker;
 
 impl Checker for InfiniteWhileChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::While(w) = stmt else { return };
         let is_true = matches!(&*w.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
@@ -2824,6 +2877,7 @@ impl Checker for InfiniteWhileChecker {
 pub struct SortedSortChecker;
 
 impl Checker for SortedSortChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(outer) = expr else { return };
         let Expr::Attribute(attr) = &*outer.func else { return };
@@ -2864,6 +2918,7 @@ impl Checker for SortedSortChecker {
 pub struct WildcardImportChecker;
 
 impl Checker for WildcardImportChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::ImportFrom(i) = stmt else { return };
         let has_wildcard = i.names.iter().any(|alias| alias.name.as_str() == "*");
@@ -2887,6 +2942,7 @@ impl Checker for WildcardImportChecker {
 pub struct RedundantPassChecker;
 
 impl Checker for RedundantPassChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let body: &[Stmt] = match stmt {
             Stmt::FunctionDef(f) => &f.body,
@@ -2923,6 +2979,7 @@ impl Checker for RedundantPassChecker {
 pub struct IsLiteralChecker;
 
 impl Checker for IsLiteralChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Compare(c) = expr else { return };
         if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
@@ -2963,6 +3020,7 @@ impl Checker for IsLiteralChecker {
 pub struct InitReturnChecker;
 
 impl Checker for InitReturnChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::FunctionDef(f) = stmt else { return };
         if f.name.as_str() != "__init__" { return; }
@@ -2991,6 +3049,7 @@ impl Checker for InitReturnChecker {
 pub struct DeadCodeChecker;
 
 impl Checker for DeadCodeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::If(i) = stmt else { return };
         let is_true = matches!(&*i.test, Expr::Constant(c) if matches!(&c.value, Constant::Bool(true)));
@@ -3073,6 +3132,7 @@ impl DefInLoopChecker {
 }
 
 impl Checker for DefInLoopChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         match stmt {
             Stmt::For(f) => {
@@ -3115,6 +3175,7 @@ impl BuiltinShadowChecker {
 }
 
 impl Checker for BuiltinShadowChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let targets: Option<&[Expr]> = match stmt {
             Stmt::Assign(a) => Some(&a.targets),
@@ -3124,8 +3185,11 @@ impl Checker for BuiltinShadowChecker {
                     let stmt_start = text_size_to_usize(range.start());
                     let stmt_src = &source[stmt_start..text_size_to_usize(range.end())];
                     let name_in_src = f.name.as_str();
-                    let name_start_in_snippet = stmt_src.find(name_in_src).unwrap_or(4);
-                    let name_start = stmt_start + name_start_in_snippet;
+                    // Search after the `def` keyword so decorators / earlier tokens
+                    // in the statement range can't shadow the real name position.
+                    let search_from = stmt_src.find("def ").map(|i| i + 4).unwrap_or(0);
+                    let Some(rel) = stmt_src[search_from..].find(name_in_src) else { return };
+                    let name_start = stmt_start + search_from + rel;
                     let name_end = name_start + name_in_src.len();
                     let (line, col) = byte_to_line_col(name_start, line_starts);
                     let (end_line, end_col) = byte_to_line_col(name_end, line_starts);
@@ -3172,6 +3236,7 @@ impl RaiseWithoutFromChecker {
 }
 
 impl Checker for RaiseWithoutFromChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.except_depth = 0; }
     fn enter_except(&mut self) { self.except_depth += 1; }
     fn exit_except(&mut self) { self.except_depth = self.except_depth.saturating_sub(1); }
@@ -3200,6 +3265,7 @@ impl Checker for RaiseWithoutFromChecker {
 pub struct EmptyCollectionChecker;
 
 impl Checker for EmptyCollectionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         if !c.args.is_empty() || !c.keywords.is_empty() { return; }
@@ -3228,6 +3294,7 @@ impl Checker for EmptyCollectionChecker {
 pub struct EmptyCompareChecker;
 
 impl Checker for EmptyCompareChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Compare(c) = expr else { return };
         if c.ops.len() != 1 || c.comparators.len() != 1 { return; }
@@ -3266,6 +3333,7 @@ impl Checker for EmptyCompareChecker {
 pub struct JoinListCompChecker;
 
 impl Checker for JoinListCompChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };
@@ -3292,6 +3360,7 @@ impl Checker for JoinListCompChecker {
 pub struct DeadExceptChecker;
 
 impl Checker for DeadExceptChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Try(t) = stmt else { return };
         for handler in &t.handlers {
@@ -3336,6 +3405,7 @@ fn is_sql_or_gettext_template(fmt: &str) -> bool {
 pub struct PercentFormatChecker;
 
 impl Checker for PercentFormatChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::BinOp(b) = expr else { return };
         if !matches!(b.op, Operator::Mod) { return; }
@@ -3362,6 +3432,7 @@ impl Checker for PercentFormatChecker {
 pub struct OsPathChecker;
 
 impl Checker for OsPathChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(outer_attr) = &*c.func else { return };
@@ -3387,6 +3458,7 @@ impl Checker for OsPathChecker {
 pub struct SingleTypeIsinstanceChecker;
 
 impl Checker for SingleTypeIsinstanceChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Name(n) = &*c.func else { return };
@@ -3416,6 +3488,7 @@ impl Checker for SingleTypeIsinstanceChecker {
 pub struct RedundantStrChecker;
 
 impl Checker for RedundantStrChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Name(n) = &*c.func else { return };
@@ -3449,6 +3522,7 @@ impl Checker for RedundantStrChecker {
 pub struct ExceptPassChecker;
 
 impl Checker for ExceptPassChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Try(t) = stmt else { return };
         for handler in &t.handlers {
@@ -3475,6 +3549,7 @@ impl Checker for ExceptPassChecker {
 pub struct DelMethodChecker;
 
 impl Checker for DelMethodChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::FunctionDef(f) = stmt else { return };
         if f.name.as_str() != "__del__" { return; }
@@ -3497,6 +3572,7 @@ impl Checker for DelMethodChecker {
 pub struct ListKeysChecker;
 
 impl Checker for ListKeysChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Name(n) = &*c.func else { return };
@@ -3526,6 +3602,7 @@ impl Checker for ListKeysChecker {
 pub struct NestedTernaryChecker;
 
 impl Checker for NestedTernaryChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::IfExp(ifexp) = expr else { return };
         let has_nested = matches!(&*ifexp.body, Expr::IfExp(_))
@@ -3550,6 +3627,7 @@ impl Checker for NestedTernaryChecker {
 pub struct ReversedSortedChecker;
 
 impl Checker for ReversedSortedChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(outer) = expr else { return };
         let Expr::Name(outer_n) = &*outer.func else { return };
@@ -3590,6 +3668,7 @@ impl Checker for ReversedSortedChecker {
 pub struct DictZipChecker;
 
 impl Checker for DictZipChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::DictComp(dc) = expr else { return };
         if dc.generators.len() != 1 { return; }
@@ -3629,6 +3708,7 @@ impl Checker for DictZipChecker {
 pub struct WhileLenChecker;
 
 impl Checker for WhileLenChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::While(ww) = stmt else { return };
         let Expr::Compare(c) = &*ww.test else { return };
@@ -3671,6 +3751,7 @@ fn is_literal_zero(expr: &Expr) -> bool {
 pub struct CopyCopyChecker;
 
 impl Checker for CopyCopyChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };
@@ -3700,6 +3781,7 @@ impl Checker for CopyCopyChecker {
 pub struct DebugLeftoverChecker;
 
 impl Checker for DebugLeftoverChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let is_print = matches!(&*c.func, Expr::Name(n) if n.id.as_str() == "print");
@@ -3740,6 +3822,7 @@ impl ImportInFunctionChecker {
 }
 
 impl Checker for ImportInFunctionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.depth += 1; }
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
 
@@ -3791,7 +3874,7 @@ impl DuplicateKeyChecker {
         for key in keys {
             let Some(key) = key else { continue };
             let Some(val) = Self::constant_value(key) else { continue };
-            if !seen.insert(val.clone()) {
+            if seen.contains(&val) {
                 let range = key.range();
                 let start = text_size_to_usize(range.start());
                 let end = text_size_to_usize(range.end());
@@ -3803,6 +3886,8 @@ impl DuplicateKeyChecker {
                     message: format!("Duplicate key '{}' in dict literal", val),
                     fix: None,
                 });
+            } else {
+                seen.insert(val);
             }
         }
     }
@@ -3811,7 +3896,7 @@ impl DuplicateKeyChecker {
         let mut seen: FxHashSet<String> = FxHashSet::default();
         for elt in elts {
             let Some(val) = Self::constant_value(elt) else { continue };
-            if !seen.insert(val.clone()) {
+            if seen.contains(&val) {
                 let range = elt.range();
                 let start = text_size_to_usize(range.start());
                 let end = text_size_to_usize(range.end());
@@ -3823,12 +3908,15 @@ impl DuplicateKeyChecker {
                     message: format!("Duplicate element '{}' in set literal", val),
                     fix: None,
                 });
+            } else {
+                seen.insert(val);
             }
         }
     }
 }
 
 impl Checker for DuplicateKeyChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         match expr {
             Expr::Dict(d) => self.check_dict(&d.keys, source, line_starts, findings),
@@ -3843,6 +3931,7 @@ impl Checker for DuplicateKeyChecker {
 pub struct BroadExceptChecker;
 
 impl Checker for BroadExceptChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Try(t) = stmt else { return };
         for handler in &t.handlers {
@@ -3869,6 +3958,7 @@ impl Checker for BroadExceptChecker {
 pub struct UnnecessaryPassChecker;
 
 impl Checker for UnnecessaryPassChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let body: &[Stmt] = match stmt {
             Stmt::FunctionDef(f) => &f.body,
@@ -3919,6 +4009,7 @@ impl ParamTypeChecker {
 }
 
 impl Checker for ParamTypeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.scope_func_name = None; }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
@@ -4012,6 +4103,7 @@ impl AttrTypeChecker {
 }
 
 impl Checker for AttrTypeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) {
         self.in_class.push(self.next_is_class);
         self.is_enum.push(self.next_is_enum);
@@ -4071,6 +4163,7 @@ impl Checker for AttrTypeChecker {
 pub struct ModuleVarTypeChecker;
 
 impl Checker for ModuleVarTypeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Assign(a) = stmt else { return };
         if a.targets.len() != 1 { return; }
@@ -4104,6 +4197,7 @@ impl Checker for ModuleVarTypeChecker {
 pub struct AnyAnnotationChecker;
 
 impl Checker for AnyAnnotationChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if let Expr::Subscript(s) = expr {
             if let Expr::Name(n) = &*s.value {
@@ -4168,6 +4262,7 @@ fn annotation_includes_none(ann: &Expr) -> bool {
 pub struct TypeDefaultMismatchChecker;
 
 impl Checker for TypeDefaultMismatchChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let args = match stmt {
             Stmt::FunctionDef(f) => &f.args,
@@ -4214,6 +4309,7 @@ impl Checker for TypeDefaultMismatchChecker {
 pub struct RedundantElifChecker;
 
 impl Checker for RedundantElifChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::If(i) = stmt else { return };
         if i.orelse.is_empty() { return; }
@@ -4242,6 +4338,7 @@ impl Checker for RedundantElifChecker {
 pub struct SelfComparisonChecker;
 
 impl Checker for SelfComparisonChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Compare(c) = expr else { return };
         // Compare left with each comparator
@@ -4283,6 +4380,7 @@ fn exprs_are_equal(a: &Expr, b: &Expr) -> bool {
 pub struct PassThroughGenChecker;
 
 impl Checker for PassThroughGenChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let func_name = match &*c.func {
@@ -4327,6 +4425,7 @@ impl TodoCommentChecker {
 }
 
 impl Checker for TodoCommentChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, _stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if self.done { return; }
         self.done = true;
@@ -4355,6 +4454,7 @@ impl Checker for TodoCommentChecker {
 pub struct ClassNameChecker;
 
 impl Checker for ClassNameChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::ClassDef(c) = stmt else { return };
         let name = c.name.as_str();
@@ -4388,6 +4488,7 @@ const UNITTEST_CONVENTIONS: &[&str] = &[
 pub struct FunctionNameChecker;
 
 impl Checker for FunctionNameChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let name = match stmt {
             Stmt::FunctionDef(f) => f.name.as_str(),
@@ -4432,6 +4533,7 @@ impl ConstantNameChecker {
 }
 
 impl Checker for ConstantNameChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.depth += 1; }
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
 
@@ -4492,8 +4594,9 @@ impl Checker for UnusedImportChecker {
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
         self.used.extend(self.all_names.drain(..));
+        let used_set: FxHashSet<&str> = self.used.iter().map(|s| s.as_str()).collect();
         for (name, _original, line, col) in &self.imports {
-            if !self.used.iter().any(|u| u.as_str() == name.as_str()) {
+            if !used_set.contains(name.as_str()) {
                 findings.push(Finding {
                     line: *line, col: *col, end_line: 0, end_col: 0,
                     code: "RAB096".to_string(),
@@ -4594,6 +4697,7 @@ impl InconsistentReturnChecker {
 }
 
 impl Checker for InconsistentReturnChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) {
         self.stack.push((self.has_value_return, self.has_bare_return));
         self.has_value_return = false;
@@ -4642,6 +4746,7 @@ impl Checker for InconsistentReturnChecker {
 pub struct AllExportChecker;
 
 impl Checker for AllExportChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Stmt::Assign(a) = stmt else { return };
         if a.targets.len() != 1 { return; }
@@ -4682,6 +4787,7 @@ impl Checker for AllExportChecker {
 pub struct EvalExecChecker;
 
 impl Checker for EvalExecChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let name = match &*c.func {
@@ -4707,6 +4813,7 @@ impl Checker for EvalExecChecker {
 pub struct PickleLoadChecker;
 
 impl Checker for PickleLoadChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };
@@ -4732,6 +4839,7 @@ impl Checker for PickleLoadChecker {
 pub struct YamlLoadChecker;
 
 impl Checker for YamlLoadChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };
@@ -4766,6 +4874,7 @@ impl DelExceptVarChecker {
 }
 
 impl Checker for DelExceptVarChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) { self.except_depth = 0; self.except_var = None; }
     fn enter_except(&mut self) { self.except_depth += 1; }
     fn exit_except(&mut self) {
@@ -4813,6 +4922,7 @@ impl Checker for DelExceptVarChecker {
 pub struct ModifyIterChecker;
 
 impl Checker for ModifyIterChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let iter_name = match stmt {
             Stmt::For(f) => {
@@ -4894,6 +5004,7 @@ impl Checker for ModifyIterChecker {
 pub struct DeprecatedAsyncioChecker;
 
 impl Checker for DeprecatedAsyncioChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };
@@ -5018,21 +5129,23 @@ impl MagicNumberChecker {
 }
 
 impl Checker for MagicNumberChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn enter_scope(&mut self) { self.depth += 1; }
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) { self.depth = self.depth.saturating_sub(1); }
 
     fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         if self.depth <= 1 { return; } // Skip module level
         let Expr::Constant(c) = expr else { return };
-        let (val_str, is_magic) = match &c.value {
-            Constant::Int(i) => (format!("{}", i), true),
-            Constant::Float(f) => (format!("{}", f), true),
-            _ => (String::new(), false),
-        };
-        if !is_magic { return; }
-        if Self::is_allowed(&val_str) { return; }
+        // Cheap guards before allocating the value string.
+        if !matches!(&c.value, Constant::Int(_) | Constant::Float(_)) { return; }
         // Skip numbers used in annotations/decorators (they're usually intentional)
-        if !findings.is_empty() && findings.last().unwrap().code == "RAB126" { return; }
+        if findings.last().map_or(false, |f| f.code == "RAB126") { return; }
+        let val_str = match &c.value {
+            Constant::Int(i) => i.to_string(),
+            Constant::Float(f) => f.to_string(),
+            _ => unreachable!(),
+        };
+        if Self::is_allowed(&val_str) { return; }
         let range = c.range();
         let start = text_size_to_usize(range.start());
         let end = text_size_to_usize(range.end());
@@ -5052,6 +5165,7 @@ impl Checker for MagicNumberChecker {
 pub struct LoopElseAfterBreakChecker;
 
 impl Checker for LoopElseAfterBreakChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (body, orelse) = match stmt {
             Stmt::For(f) => (&f.body, &f.orelse),
@@ -5099,6 +5213,7 @@ fn has_break_in_stmt(stmt: &Stmt) -> bool {
 pub struct NotInChecker;
 
 impl Checker for NotInChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::UnaryOp(u) = expr else { return };
         if !matches!(u.op, UnaryOp::Not) { return; }
@@ -5128,6 +5243,7 @@ impl Checker for NotInChecker {
 pub struct SuperInitChecker;
 
 impl Checker for SuperInitChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn enter_scope(&mut self) {} // Reset state when entering a class body
 
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
@@ -5196,6 +5312,7 @@ fn contains_super_init_call(stmt: &Stmt, source: &str) -> bool {
 }
 
 impl Checker for TypeUnionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
     fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let (returns, args) = match stmt {
             Stmt::FunctionDef(f) => (&f.returns, &f.args),
@@ -5241,6 +5358,7 @@ fn escape_str(s: &str) -> String {
 }
 
 impl Checker for LoggingFstringChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
     fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
         let Expr::Call(c) = expr else { return };
         let Expr::Attribute(a) = &*c.func else { return };

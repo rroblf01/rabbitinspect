@@ -98,7 +98,24 @@ fn compute_line_starts(source: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Which AST node category a checker inspects. Used to skip the (dynamic-dispatch)
+/// visit call for checkers that can't produce a finding for that node kind.
+/// Defaults to `Both`, so a checker that forgets to declare is never silently
+/// disabled — it just doesn't get the dispatch-skipping speedup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    Stmt,
+    Expr,
+    Both,
+}
+
 pub trait Checker {
+    /// Declares whether this checker overrides `visit_stmt`, `visit_expr`, or both.
+    /// A checker that only implements one must still report the other accurately;
+    /// the safe default `Both` keeps it correct if unset.
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Both
+    }
     fn enter_scope(&mut self) {}
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {}
     fn enter_block(&mut self) {}
@@ -363,10 +380,25 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut log_fstring,
     ];
 
+    // Precompute, once, which checkers care about statements vs expressions so the
+    // per-node walk only pays the dynamic-dispatch cost for relevant checkers.
+    let mut stmt_idx: Vec<usize> = Vec::with_capacity(checkers.len());
+    let mut expr_idx: Vec<usize> = Vec::with_capacity(checkers.len());
+    for (i, c) in checkers.iter().enumerate() {
+        match c.node_kind() {
+            NodeKind::Stmt => stmt_idx.push(i),
+            NodeKind::Expr => expr_idx.push(i),
+            NodeKind::Both => {
+                stmt_idx.push(i);
+                expr_idx.push(i);
+            }
+        }
+    }
+
     for c in checkers.iter_mut() {
         c.enter_scope();
     }
-    walk_stmts(&module_stmts, source, &line_starts, checkers, &mut findings);
+    walk_stmts(&module_stmts, source, &line_starts, checkers, &stmt_idx, &expr_idx, &mut findings);
     for c in checkers.iter_mut() {
         c.exit_scope(&mut findings);
     }
@@ -380,174 +412,176 @@ fn walk_stmts(
     source: &str,
     line_starts: &[usize],
     checkers: &mut [&mut dyn Checker],
+    stmt_idx: &[usize],
+    expr_idx: &[usize],
     findings: &mut Vec<Finding>,
 ) {
     for stmt in stmts {
-        for c in checkers.iter_mut() {
-            c.visit_stmt(stmt, source, line_starts, findings);
+        for &i in stmt_idx {
+            checkers[i].visit_stmt(stmt, source, line_starts, findings);
         }
         match stmt {
             Stmt::FunctionDef(f) => {
                 for expr in &f.decorator_list {
-                    walk_expr(expr, source, line_starts, checkers, findings);
+                    walk_expr(expr, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
-                walk_expr_opt(f.returns.as_deref(), source, line_starts, checkers, findings);
+                walk_expr_opt(f.returns.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() {
                     c.enter_scope();
                 }
-                walk_stmts(&f.body, source, line_starts, checkers, findings);
+                walk_stmts(&f.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() {
                     c.exit_scope(findings);
                 }
             }
             Stmt::AsyncFunctionDef(f) => {
                 for expr in &f.decorator_list {
-                    walk_expr(expr, source, line_starts, checkers, findings);
+                    walk_expr(expr, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
-                walk_expr_opt(f.returns.as_deref(), source, line_starts, checkers, findings);
+                walk_expr_opt(f.returns.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() {
                     c.enter_scope();
                 }
-                walk_stmts(&f.body, source, line_starts, checkers, findings);
+                walk_stmts(&f.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() {
                     c.exit_scope(findings);
                 }
             }
             Stmt::ClassDef(cd) => {
                 for expr in &cd.decorator_list {
-                    walk_expr(expr, source, line_starts, checkers, findings);
+                    walk_expr(expr, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
                 for base in &cd.bases {
-                    walk_expr(base, source, line_starts, checkers, findings);
+                    walk_expr(base, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
                 for kw in &cd.keywords {
-                    walk_expr(&kw.value, source, line_starts, checkers, findings);
+                    walk_expr(&kw.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
                 for c in checkers.iter_mut() {
                     c.enter_scope();
                 }
-                walk_stmts(&cd.body, source, line_starts, checkers, findings);
+                walk_stmts(&cd.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() {
                     c.exit_scope(findings);
                 }
             }
             Stmt::Return(r) => {
-                walk_expr_opt(r.value.as_deref(), source, line_starts, checkers, findings);
+                walk_expr_opt(r.value.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Delete(d) => {
                 for target in &d.targets {
-                    walk_expr(target, source, line_starts, checkers, findings);
+                    walk_expr(target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
             Stmt::Assign(a) => {
                 for target in &a.targets {
-                    walk_expr(target, source, line_starts, checkers, findings);
+                    walk_expr(target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
-                walk_expr(&a.value, source, line_starts, checkers, findings);
+                walk_expr(&a.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::AugAssign(a) => {
-                walk_expr(&a.target, source, line_starts, checkers, findings);
-                walk_expr(&a.value, source, line_starts, checkers, findings);
+                walk_expr(&a.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&a.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::AnnAssign(a) => {
-                walk_expr(&a.target, source, line_starts, checkers, findings);
-                walk_expr(&a.annotation, source, line_starts, checkers, findings);
-                walk_expr_opt(a.value.as_deref(), source, line_starts, checkers, findings);
+                walk_expr(&a.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&a.annotation, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr_opt(a.value.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::For(f) => {
-                walk_expr(&f.target, source, line_starts, checkers, findings);
-                walk_expr(&f.iter, source, line_starts, checkers, findings);
+                walk_expr(&f.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&f.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&f.body, source, line_starts, checkers, findings);
+                walk_stmts(&f.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
-                walk_stmts(&f.orelse, source, line_starts, checkers, findings);
+                walk_stmts(&f.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::AsyncFor(f) => {
-                walk_expr(&f.target, source, line_starts, checkers, findings);
-                walk_expr(&f.iter, source, line_starts, checkers, findings);
+                walk_expr(&f.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&f.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&f.body, source, line_starts, checkers, findings);
+                walk_stmts(&f.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
-                walk_stmts(&f.orelse, source, line_starts, checkers, findings);
+                walk_stmts(&f.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::While(w) => {
-                walk_expr(&w.test, source, line_starts, checkers, findings);
+                walk_expr(&w.test, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&w.body, source, line_starts, checkers, findings);
+                walk_stmts(&w.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
-                walk_stmts(&w.orelse, source, line_starts, checkers, findings);
+                walk_stmts(&w.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::If(i) => {
-                walk_expr(&i.test, source, line_starts, checkers, findings);
+                walk_expr(&i.test, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&i.body, source, line_starts, checkers, findings);
+                walk_stmts(&i.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
-                walk_stmts(&i.orelse, source, line_starts, checkers, findings);
+                walk_stmts(&i.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::With(w) => {
                 for item in &w.items {
-                    walk_expr(&item.context_expr, source, line_starts, checkers, findings);
-                    walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, findings);
+                    walk_expr(&item.context_expr, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                    walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&w.body, source, line_starts, checkers, findings);
+                walk_stmts(&w.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
             }
             Stmt::AsyncWith(w) => {
                 for item in &w.items {
-                    walk_expr(&item.context_expr, source, line_starts, checkers, findings);
-                    walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, findings);
+                    walk_expr(&item.context_expr, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                    walk_expr_opt(item.optional_vars.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&w.body, source, line_starts, checkers, findings);
+                walk_stmts(&w.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
             }
             Stmt::Raise(r) => {
-                walk_expr_opt(r.exc.as_deref(), source, line_starts, checkers, findings);
-                walk_expr_opt(r.cause.as_deref(), source, line_starts, checkers, findings);
+                walk_expr_opt(r.exc.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr_opt(r.cause.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Try(t) => {
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&t.body, source, line_starts, checkers, findings);
+                walk_stmts(&t.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
                     for c in checkers.iter_mut() { c.enter_except(); }
-                    walk_stmts(&h.body, source, line_starts, checkers, findings);
+                    walk_stmts(&h.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                     for c in checkers.iter_mut() { c.exit_except(); }
                 }
-                walk_stmts(&t.orelse, source, line_starts, checkers, findings);
-                walk_stmts(&t.finalbody, source, line_starts, checkers, findings);
+                walk_stmts(&t.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_stmts(&t.finalbody, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Assert(a) => {
-                walk_expr(&a.test, source, line_starts, checkers, findings);
-                walk_expr_opt(a.msg.as_deref(), source, line_starts, checkers, findings);
+                walk_expr(&a.test, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr_opt(a.msg.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Import(_) | Stmt::ImportFrom(_) => {}
             Stmt::Global(_) | Stmt::Nonlocal(_) => {}
             Stmt::Expr(e) => {
-                walk_expr(&e.value, source, line_starts, checkers, findings);
+                walk_expr(&e.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Match(m) => {
-                walk_expr(&m.subject, source, line_starts, checkers, findings);
+                walk_expr(&m.subject, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for case in &m.cases {
                     for c in checkers.iter_mut() { c.enter_block(); }
-                    walk_stmts(&case.body, source, line_starts, checkers, findings);
+                    walk_stmts(&case.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                     for c in checkers.iter_mut() { c.exit_block(); }
                 }
             }
             Stmt::TryStar(t) => {
                 for c in checkers.iter_mut() { c.enter_block(); }
-                walk_stmts(&t.body, source, line_starts, checkers, findings);
+                walk_stmts(&t.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for c in checkers.iter_mut() { c.exit_block(); }
                 for handler in &t.handlers {
                     let ExceptHandler::ExceptHandler(h) = handler;
                     for c in checkers.iter_mut() { c.enter_except(); }
-                    walk_stmts(&h.body, source, line_starts, checkers, findings);
+                    walk_stmts(&h.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                     for c in checkers.iter_mut() { c.exit_except(); }
                 }
-                walk_stmts(&t.orelse, source, line_starts, checkers, findings);
-                walk_stmts(&t.finalbody, source, line_starts, checkers, findings);
+                walk_stmts(&t.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_stmts(&t.finalbody, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             Stmt::Pass(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::TypeAlias(_) => {}
         }
@@ -559,151 +593,153 @@ fn walk_expr(
     source: &str,
     line_starts: &[usize],
     checkers: &mut [&mut dyn Checker],
+    stmt_idx: &[usize],
+    expr_idx: &[usize],
     findings: &mut Vec<Finding>,
 ) {
-    for c in checkers.iter_mut() {
-        c.visit_expr(expr, source, line_starts, findings);
+    for &i in expr_idx {
+        checkers[i].visit_expr(expr, source, line_starts, findings);
     }
     match expr {
         Expr::BoolOp(b) => {
             for val in &b.values {
-                walk_expr(val, source, line_starts, checkers, findings);
+                walk_expr(val, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::NamedExpr(ne) => {
-            walk_expr(&ne.target, source, line_starts, checkers, findings);
-            walk_expr(&ne.value, source, line_starts, checkers, findings);
+            walk_expr(&ne.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&ne.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::BinOp(b) => {
-            walk_expr(&b.left, source, line_starts, checkers, findings);
-            walk_expr(&b.right, source, line_starts, checkers, findings);
+            walk_expr(&b.left, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&b.right, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::UnaryOp(u) => {
-            walk_expr(&u.operand, source, line_starts, checkers, findings);
+            walk_expr(&u.operand, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Lambda(l) => {
-            walk_expr(&l.body, source, line_starts, checkers, findings);
+            walk_expr(&l.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::IfExp(if_exp) => {
-            walk_expr(&if_exp.test, source, line_starts, checkers, findings);
-            walk_expr(&if_exp.body, source, line_starts, checkers, findings);
-            walk_expr(&if_exp.orelse, source, line_starts, checkers, findings);
+            walk_expr(&if_exp.test, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&if_exp.body, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&if_exp.orelse, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Dict(d) => {
             for key in &d.keys {
                 if let Some(k) = key {
-                    walk_expr(k, source, line_starts, checkers, findings);
+                    walk_expr(k, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
             for val in &d.values {
-                walk_expr(val, source, line_starts, checkers, findings);
+                walk_expr(val, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::Set(s) => {
             for elt in &s.elts {
-                walk_expr(elt, source, line_starts, checkers, findings);
+                walk_expr(elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::ListComp(lc) => {
-            walk_expr(&lc.elt, source, line_starts, checkers, findings);
+            walk_expr(&lc.elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for gen in &lc.generators {
-                walk_expr(&gen.target, source, line_starts, checkers, findings);
-                walk_expr(&gen.iter, source, line_starts, checkers, findings);
+                walk_expr(&gen.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&gen.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for cond in &gen.ifs {
-                    walk_expr(cond, source, line_starts, checkers, findings);
+                    walk_expr(cond, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
         }
         Expr::SetComp(sc) => {
-            walk_expr(&sc.elt, source, line_starts, checkers, findings);
+            walk_expr(&sc.elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for gen in &sc.generators {
-                walk_expr(&gen.target, source, line_starts, checkers, findings);
-                walk_expr(&gen.iter, source, line_starts, checkers, findings);
+                walk_expr(&gen.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&gen.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for cond in &gen.ifs {
-                    walk_expr(cond, source, line_starts, checkers, findings);
+                    walk_expr(cond, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
         }
         Expr::DictComp(dc) => {
-            walk_expr(&dc.key, source, line_starts, checkers, findings);
-            walk_expr(&dc.value, source, line_starts, checkers, findings);
+            walk_expr(&dc.key, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&dc.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for gen in &dc.generators {
-                walk_expr(&gen.target, source, line_starts, checkers, findings);
-                walk_expr(&gen.iter, source, line_starts, checkers, findings);
+                walk_expr(&gen.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&gen.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for cond in &gen.ifs {
-                    walk_expr(cond, source, line_starts, checkers, findings);
+                    walk_expr(cond, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
         }
         Expr::GeneratorExp(ge) => {
-            walk_expr(&ge.elt, source, line_starts, checkers, findings);
+            walk_expr(&ge.elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for gen in &ge.generators {
-                walk_expr(&gen.target, source, line_starts, checkers, findings);
-                walk_expr(&gen.iter, source, line_starts, checkers, findings);
+                walk_expr(&gen.target, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+                walk_expr(&gen.iter, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 for cond in &gen.ifs {
-                    walk_expr(cond, source, line_starts, checkers, findings);
+                    walk_expr(cond, source, line_starts, checkers, stmt_idx, expr_idx, findings);
                 }
             }
         }
         Expr::Await(a) => {
-            walk_expr(&a.value, source, line_starts, checkers, findings);
+            walk_expr(&a.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Yield(y) => {
-            walk_expr_opt(y.value.as_deref(), source, line_starts, checkers, findings);
+            walk_expr_opt(y.value.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::YieldFrom(yf) => {
-            walk_expr(&yf.value, source, line_starts, checkers, findings);
+            walk_expr(&yf.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Compare(c) => {
-            walk_expr(&c.left, source, line_starts, checkers, findings);
+            walk_expr(&c.left, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for comp in &c.comparators {
-                walk_expr(comp, source, line_starts, checkers, findings);
+                walk_expr(comp, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::Call(c) => {
-            walk_expr(&c.func, source, line_starts, checkers, findings);
+            walk_expr(&c.func, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             for arg in &c.args {
-                walk_expr(arg, source, line_starts, checkers, findings);
+                walk_expr(arg, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
             for kw in &c.keywords {
-                walk_expr(&kw.value, source, line_starts, checkers, findings);
+                walk_expr(&kw.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::Constant(_) => {}
         Expr::JoinedStr(js) => {
             for val in &js.values {
-                walk_expr(val, source, line_starts, checkers, findings);
+                walk_expr(val, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::FormattedValue(fv) => {
-            walk_expr(&fv.value, source, line_starts, checkers, findings);
-            walk_expr_opt(fv.format_spec.as_deref(), source, line_starts, checkers, findings);
+            walk_expr(&fv.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr_opt(fv.format_spec.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Attribute(a) => {
-            walk_expr(&a.value, source, line_starts, checkers, findings);
+            walk_expr(&a.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Subscript(s) => {
-            walk_expr(&s.value, source, line_starts, checkers, findings);
-            walk_expr(&s.slice, source, line_starts, checkers, findings);
+            walk_expr(&s.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr(&s.slice, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Starred(s) => {
-            walk_expr(&s.value, source, line_starts, checkers, findings);
+            walk_expr(&s.value, source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         Expr::Name(_) => {}
         Expr::List(l) => {
             for elt in &l.elts {
-                walk_expr(elt, source, line_starts, checkers, findings);
+                walk_expr(elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::Tuple(t) => {
             for elt in &t.elts {
-                walk_expr(elt, source, line_starts, checkers, findings);
+                walk_expr(elt, source, line_starts, checkers, stmt_idx, expr_idx, findings);
             }
         }
         Expr::Slice(s) => {
-            walk_expr_opt(s.lower.as_deref(), source, line_starts, checkers, findings);
-            walk_expr_opt(s.upper.as_deref(), source, line_starts, checkers, findings);
-            walk_expr_opt(s.step.as_deref(), source, line_starts, checkers, findings);
+            walk_expr_opt(s.lower.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr_opt(s.upper.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
+            walk_expr_opt(s.step.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
         _ => {}
     }
@@ -714,9 +750,11 @@ fn walk_expr_opt(
     source: &str,
     line_starts: &[usize],
     checkers: &mut [&mut dyn Checker],
+    stmt_idx: &[usize],
+    expr_idx: &[usize],
     findings: &mut Vec<Finding>,
 ) {
     if let Some(e) = expr {
-        walk_expr(e, source, line_starts, checkers, findings);
+        walk_expr(e, source, line_starts, checkers, stmt_idx, expr_idx, findings);
     }
 }
