@@ -2163,3 +2163,123 @@ class TestRAB086EqualityOrChain:
     def test_single_comparison_ok(self):
         findings = analyze_code("if x == 1:\n    pass\n")
         assert finding_by_code(findings, "RAB086") is None
+
+
+class TestRAB130LenComprehension:
+    def test_len_listcomp(self):
+        findings = check_code("n = len([x for x in data if x > 0])", {"RAB130"})
+        f = finding_by_code(findings, "RAB130")
+        assert f["fix"]["replacement"] == "sum(1 for x in data if x > 0)"
+
+    def test_len_setcomp_not_flagged(self):
+        # len() of a set comprehension counts distinct items — not equivalent
+        findings = analyze_code("n = len({x for x in data})")
+        assert finding_by_code(findings, "RAB130") is None
+
+    def test_plain_len_ok(self):
+        findings = analyze_code("n = len(data)")
+        assert finding_by_code(findings, "RAB130") is None
+
+
+class TestRAB131GenExprConstructor:
+    def test_set_listcomp(self):
+        findings = check_code("s = set([x * 2 for x in y])", {"RAB131"})
+        f = finding_by_code(findings, "RAB131")
+        assert f["fix"]["replacement"] == "(x * 2 for x in y)"
+
+    def test_sorted_with_key(self):
+        findings = check_code("r = sorted([x for x in y], key=f)", {"RAB131"})
+        f = finding_by_code(findings, "RAB131")
+        # parenthesised so it stays valid alongside the key= argument
+        assert f["fix"]["replacement"] == "(x for x in y)"
+
+    def test_tuple_frozenset_dict(self):
+        for ctor in ("tuple", "frozenset", "dict"):
+            check_code(f"r = {ctor}([x for x in y])", {"RAB131"})
+
+    def test_already_genexpr_ok(self):
+        findings = analyze_code("s = set(x * 2 for x in y)")
+        assert finding_by_code(findings, "RAB131") is None
+
+    def test_list_constructor_not_flagged(self):
+        findings = analyze_code("s = list([x for x in y])")
+        assert finding_by_code(findings, "RAB131") is None
+
+
+class TestRAB132ListConcatInLoop:
+    def test_append_single(self):
+        src = "def f():\n    acc = []\n    for x in y:\n        acc = acc + [x]\n    return acc\n"
+        findings = check_code(src, {"RAB132"})
+        f = finding_by_code(findings, "RAB132")
+        assert f["fix"]["replacement"] == "acc.append(x)"
+
+    def test_extend_multiple(self):
+        src = "def f():\n    acc = []\n    for x in y:\n        acc = acc + [x, x * 2]\n    return acc\n"
+        findings = check_code(src, {"RAB132"})
+        f = finding_by_code(findings, "RAB132")
+        assert f["fix"]["replacement"] == "acc.extend([x, x * 2])"
+
+    def test_inside_if_inside_loop(self):
+        src = "def f():\n    acc = []\n    for x in y:\n        if x:\n            acc = acc + [x]\n    return acc\n"
+        check_code(src, {"RAB132"})
+
+    def test_augassign_ok(self):
+        src = "def f():\n    acc = []\n    for x in y:\n        acc += [x]\n    return acc\n"
+        findings = analyze_code(src)
+        assert finding_by_code(findings, "RAB132") is None
+
+    def test_outside_loop_ok(self):
+        findings = analyze_code("acc = acc + [x]")
+        assert finding_by_code(findings, "RAB132") is None
+
+    def test_int_accumulation_ok(self):
+        src = "def f():\n    n = 0\n    for x in y:\n        n = n + 1\n    return n\n"
+        findings = analyze_code(src)
+        assert finding_by_code(findings, "RAB132") is None
+
+
+class TestRAB133Deque:
+    def test_pop_zero(self):
+        check_code("queue.pop(0)", {"RAB133"})
+
+    def test_insert_zero(self):
+        check_code("queue.insert(0, item)", {"RAB133"})
+
+    def test_pop_last_ok(self):
+        findings = analyze_code("queue.pop()")
+        assert finding_by_code(findings, "RAB133") is None
+
+    def test_insert_middle_ok(self):
+        findings = analyze_code("queue.insert(3, item)")
+        assert finding_by_code(findings, "RAB133") is None
+
+
+class TestRAB134PartialSort:
+    def test_head_slice(self):
+        check_code("top = sorted(data)[:5]", {"RAB134"})
+
+    def test_tail_slice(self):
+        check_code("top = sorted(data)[-5:]", {"RAB134"})
+
+    def test_full_slice_ok(self):
+        findings = analyze_code("top = sorted(data)[:]")
+        assert finding_by_code(findings, "RAB134") is None
+
+    def test_index_ok(self):
+        findings = analyze_code("top = sorted(data)[0]")
+        assert finding_by_code(findings, "RAB134") is None
+
+
+class TestRAB135ListRangeLoop:
+    def test_list_range(self):
+        findings = check_code("for i in list(range(10)):\n    pass\n", {"RAB135"})
+        f = finding_by_code(findings, "RAB135")
+        assert f["fix"]["replacement"] == "range(10)"
+
+    def test_plain_range_ok(self):
+        findings = analyze_code("for i in range(10):\n    pass\n")
+        assert finding_by_code(findings, "RAB135") is None
+
+    def test_list_other_ok(self):
+        findings = analyze_code("for i in list(data):\n    pass\n")
+        assert finding_by_code(findings, "RAB135") is None

@@ -131,7 +131,7 @@ Rules are grouped into categories so you can enable or disable related checks to
 | Category | Description | Count |
 |----------|-------------|-------|
 | **correctness** | Potential bugs and correctness issues | 51 |
-| **performance** | Performance improvements | 29 |
+| **performance** | Performance improvements | 35 |
 | **style** | Code style and conventions | 25 |
 | **typesafety** | Type annotation rules | 7 |
 | **complexity** | Code complexity metrics | 4 |
@@ -239,6 +239,12 @@ rabbitinspect src/ --ignore-category style,complexity
 | **RAB088** | `while len(x) > 0` → `while x` | ✅ |
 | **RAB089** | `copy.copy(x)` → `x.copy()` | ✅ |
 | **RAB104** | Pass-through generator `list(x for x in y)` → `list(y)` | ❌ |
+| **RAB130** | `len([... for ...])` → `sum(1 for ...)` | ✅ |
+| **RAB131** | `set([...])` / `tuple([...])` / `sorted([...])` → generator | ✅ |
+| **RAB132** | `x = x + [..]` in a loop (O(n²)) → `.append()` / `.extend()` | ✅ |
+| **RAB133** | `list.pop(0)` / `list.insert(0, …)` → `collections.deque` | ❌ |
+| **RAB134** | `sorted(x)[:k]` / `sorted(x)[-k:]` → `heapq.nsmallest`/`nlargest` | ❌ |
+| **RAB135** | `for … in list(range(…))` → iterate `range(…)` directly | ✅ |
 
 ### style — Code style and conventions
 

@@ -5644,3 +5644,247 @@ impl Checker for EqualityOrChainChecker {
         });
     }
 }
+
+// ── RAB130: len([... for ...]) → sum(1 for ...) ───────────────────────
+// Building a throwaway list just to count it wastes time and memory.
+// Restricted to list comprehensions: len() of a *set* comprehension
+// counts distinct items, so `sum(1 for ...)` would not be equivalent.
+
+pub struct LenComprehensionChecker;
+
+impl Checker for LenComprehensionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(call) = expr else { return };
+        let Expr::Name(n) = &*call.func else { return };
+        if n.id.as_str() != "len" || call.args.len() != 1 || !call.keywords.is_empty() { return; }
+        let Expr::ListComp(lc) = &call.args[0] else { return };
+
+        let crange = call.range();
+        let start = text_size_to_usize(crange.start());
+        let end = text_size_to_usize(crange.end());
+
+        // Reconstruct the generator part: everything between the element
+        // expression and the closing bracket of the comprehension.
+        let lc_range = lc.range();
+        let lc_end = text_size_to_usize(lc_range.end());
+        let elt_end = text_size_to_usize(lc.elt.range().end());
+        let rest = &source[elt_end..lc_end - 1]; // " for x in y if ..." (drops the ']')
+
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB130".to_string(),
+            message: "Use 'sum(1 for ...)' instead of 'len([... for ...])' to avoid building a throwaway list".to_string(),
+            fix: Some(Fix { start, end, replacement: format!("sum(1{})", rest) }),
+        });
+    }
+}
+
+// ── RAB131: constructor([... for ...]) → constructor(... for ...) ──────
+// set()/tuple()/frozenset()/sorted()/dict() accept any iterable, so the
+// intermediate list from a comprehension is pure overhead.
+
+pub struct GenExprConstructorChecker;
+
+impl Checker for GenExprConstructorChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(call) = expr else { return };
+        let Expr::Name(n) = &*call.func else { return };
+        let func = n.id.as_str();
+        if !matches!(func, "set" | "tuple" | "frozenset" | "sorted" | "dict") { return; }
+        let Some(Expr::ListComp(lc)) = call.args.first() else { return };
+
+        let lc_range = lc.range();
+        let lc_start = text_size_to_usize(lc_range.start());
+        let lc_end = text_size_to_usize(lc_range.end());
+        let inner = &source[lc_start + 1..lc_end - 1]; // strip [ ]
+
+        let (line, col) = byte_to_line_col(lc_start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(lc_end, line_starts);
+        // Parenthesise so it stays valid when the call has extra args
+        // (e.g. `sorted([...], key=f)` → `sorted((... ), key=f)`).
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB131".to_string(),
+            message: format!("Pass a generator to {}() instead of a list comprehension to skip the intermediate list", func),
+            fix: Some(Fix { start: lc_start, end: lc_end, replacement: format!("({})", inner) }),
+        });
+    }
+}
+
+// ── RAB132: x = x + [..] inside a loop → x.append/extend ──────────────
+// Rebinding with `+` builds a new list each iteration: O(n^2) overall.
+
+pub struct ListConcatInLoopChecker;
+
+fn self_list_concat<'a>(a: &'a StmtAssign) -> Option<(&'a str, &'a ExprList)> {
+    if a.targets.len() != 1 { return None; }
+    let Expr::Name(t) = &a.targets[0] else { return None };
+    let Expr::BinOp(b) = &*a.value else { return None };
+    if !matches!(b.op, Operator::Add) { return None; }
+    let Expr::Name(l) = &*b.left else { return None };
+    if l.id.as_str() != t.id.as_str() { return None; }
+    let Expr::List(list) = &*b.right else { return None };
+    Some((t.id.as_str(), list))
+}
+
+impl ListConcatInLoopChecker {
+    fn scan(stmts: &[Stmt], source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        for s in stmts {
+            match s {
+                Stmt::Assign(a) => {
+                    if let Some((name, list)) = self_list_concat(a) {
+                        let range = s.range();
+                        let start = text_size_to_usize(range.start());
+                        let end = text_size_to_usize(range.end());
+                        let (line, col) = byte_to_line_col(start, line_starts);
+                        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+                        let replacement = if list.elts.len() == 1 {
+                            format!("{}.append({})", name, expr_to_source(source, &list.elts[0]))
+                        } else {
+                            let lr = list.range();
+                            let list_src = &source[text_size_to_usize(lr.start())..text_size_to_usize(lr.end())];
+                            format!("{}.extend({})", name, list_src)
+                        };
+                        findings.push(Finding {
+                            line, col, end_line, end_col,
+                            code: "RAB132".to_string(),
+                            message: format!("'{0} = {0} + [...]' in a loop is O(n^2); use '{0}.append()' / '{0}.extend()'", name),
+                            fix: Some(Fix { start, end, replacement }),
+                        });
+                    }
+                }
+                // Descend into conditionals/with/try, but not nested loops,
+                // defs, or classes — those report (or scope) on their own.
+                Stmt::If(i) => { Self::scan(&i.body, source, line_starts, findings); Self::scan(&i.orelse, source, line_starts, findings); }
+                Stmt::With(w) => Self::scan(&w.body, source, line_starts, findings),
+                Stmt::AsyncWith(w) => Self::scan(&w.body, source, line_starts, findings),
+                Stmt::Try(t) => {
+                    Self::scan(&t.body, source, line_starts, findings);
+                    for h in &t.handlers { let ExceptHandler::ExceptHandler(eh) = h; Self::scan(&eh.body, source, line_starts, findings); }
+                    Self::scan(&t.orelse, source, line_starts, findings);
+                    Self::scan(&t.finalbody, source, line_starts, findings);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Checker for ListConcatInLoopChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let body = match stmt {
+            Stmt::For(f) => &f.body,
+            Stmt::AsyncFor(f) => &f.body,
+            Stmt::While(w) => &w.body,
+            _ => return,
+        };
+        Self::scan(body, source, line_starts, findings);
+    }
+}
+
+// ── RAB133: list.pop(0) / list.insert(0, x) → collections.deque ───────
+// Popping/inserting at the front of a list is O(n); a deque does it in
+// O(1) via popleft()/appendleft().
+
+pub struct DequeChecker;
+
+impl Checker for DequeChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Call(call) = expr else { return };
+        let Expr::Attribute(attr) = &*call.func else { return };
+        let (method, ok) = match attr.attr.as_str() {
+            "pop" => ("pop(0)", call.args.len() == 1 && is_literal_zero(&call.args[0])),
+            "insert" => ("insert(0, ...)", call.args.len() >= 1 && is_literal_zero(&call.args[0])),
+            _ => return,
+        };
+        if !ok { return; }
+        let range = call.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB133".to_string(),
+            message: format!("'{}' on a list is O(n); use 'collections.deque' (popleft/appendleft) for O(1)", method),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB134: sorted(x)[:k] / sorted(x)[-k:] → heapq.nsmallest/nlargest ──
+// A full sort is O(n log n); a partial selection is O(n log k).
+
+pub struct PartialSortChecker;
+
+impl Checker for PartialSortChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
+    fn visit_expr(&mut self, expr: &Expr, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::Subscript(sub) = expr else { return };
+        let Expr::Call(call) = &*sub.value else { return };
+        let Expr::Name(n) = &*call.func else { return };
+        if n.id.as_str() != "sorted" { return; }
+        let Expr::Slice(sl) = &*sub.slice else { return };
+        if sl.step.is_some() { return; }
+
+        let suggestion = if sl.lower.is_none() && sl.upper.is_some() {
+            "heapq.nsmallest(k, x)" // sorted(x)[:k]
+        } else if sl.lower.is_some() && sl.upper.is_none() {
+            "heapq.nlargest(k, x)"  // sorted(x)[-k:]
+        } else {
+            return;
+        };
+
+        let range = sub.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB134".to_string(),
+            message: format!("Slicing a full sort is O(n log n); use '{}' for an O(n log k) partial sort", suggestion),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB135: for ... in list(range(...)) → iterate range directly ──────
+
+pub struct ListRangeLoopChecker;
+
+impl Checker for ListRangeLoopChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let iter = match stmt {
+            Stmt::For(f) => &f.iter,
+            Stmt::AsyncFor(f) => &f.iter,
+            _ => return,
+        };
+        let Expr::Call(outer) = &**iter else { return };
+        let Expr::Name(on) = &*outer.func else { return };
+        if on.id.as_str() != "list" || outer.args.len() != 1 { return; }
+        let Expr::Call(inner) = &outer.args[0] else { return };
+        let Expr::Name(inner_name) = &*inner.func else { return };
+        if inner_name.id.as_str() != "range" { return; }
+
+        let range = outer.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = expr_to_source(source, &outer.args[0]);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB135".to_string(),
+            message: "Iterate over 'range(...)' directly instead of 'list(range(...))' to avoid materializing the list".to_string(),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}

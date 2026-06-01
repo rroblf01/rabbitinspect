@@ -38,6 +38,7 @@ pub const CHECK_CODES: &[&str] = &[
     "RAB126",
     "RAB127", "RAB128",
     "RAB129",
+    "RAB130", "RAB131", "RAB132", "RAB133", "RAB134", "RAB135",
 ];
 
 #[derive(Debug, Clone)]
@@ -267,6 +268,12 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut base_exception = crate::checks::BaseExceptionChecker;
     let mut bare_raise = crate::checks::BareRaiseChecker::new();
     let mut eq_or_chain = crate::checks::EqualityOrChainChecker;
+    let mut len_comp = crate::checks::LenComprehensionChecker;
+    let mut genexpr_ctor = crate::checks::GenExprConstructorChecker;
+    let mut list_concat_loop = crate::checks::ListConcatInLoopChecker;
+    let mut deque_check = crate::checks::DequeChecker;
+    let mut partial_sort = crate::checks::PartialSortChecker;
+    let mut list_range_loop = crate::checks::ListRangeLoopChecker;
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -388,6 +395,12 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut base_exception,
         &mut bare_raise,
         &mut eq_or_chain,
+        &mut len_comp,
+        &mut genexpr_ctor,
+        &mut list_concat_loop,
+        &mut deque_check,
+        &mut partial_sort,
+        &mut list_range_loop,
     ];
 
     // Precompute, once, which checkers care about statements vs expressions so the

@@ -402,6 +402,18 @@ EXPLANATIONS: dict[str, str] = {
     "RAB129": "Use lazy '%s' formatting instead of an f-string in a logging call. "
                "f-strings are evaluated eagerly even when the log level is disabled, "
                "while lazy formatting defers interpolation to the logging system.",
+    "RAB130": "Use sum(1 for ...) instead of len([... for ...]); counting a generator "
+               "avoids building a throwaway list.",
+    "RAB131": "Pass a generator expression to set()/tuple()/frozenset()/sorted()/dict() "
+               "instead of a list comprehension to skip the intermediate list.",
+    "RAB132": "x = x + [...] inside a loop rebuilds the list every iteration (O(n^2)). "
+               "Use x.append() / x.extend() instead.",
+    "RAB133": "list.pop(0) / list.insert(0, ...) are O(n). Use collections.deque with "
+               "popleft() / appendleft() for O(1) front operations.",
+    "RAB134": "Slicing a full sort (sorted(x)[:k] / sorted(x)[-k:]) is O(n log n). Use "
+               "heapq.nsmallest(k, x) / heapq.nlargest(k, x) for an O(n log k) partial sort.",
+    "RAB135": "Iterate over range(...) directly instead of list(range(...)); range is a "
+               "lazy sequence and the list is never needed for iteration.",
 }
 
 ALL_CODES = sorted(EXPLANATIONS.keys())
@@ -525,6 +537,12 @@ RULES_CATEGORY: dict[str, str] = {
     "RAB127": "correctness",
     "RAB128": "correctness",
     "RAB129": "correctness",
+    "RAB130": "performance",
+    "RAB131": "performance",
+    "RAB132": "performance",
+    "RAB133": "performance",
+    "RAB134": "performance",
+    "RAB135": "performance",
 }
 
 CATEGORIES = {
@@ -560,7 +578,8 @@ def print_code_list(color: bool) -> None:
                 "RAB060", "RAB062", "RAB063", "RAB064", "RAB067", "RAB069",
                 "RAB070", "RAB071", "RAB075", "RAB076", "RAB077", "RAB080",
                 "RAB082", "RAB085", "RAB086", "RAB087", "RAB088", "RAB089",
-                "RAB112", "RAB128", "RAB129",
+                "RAB112", "RAB128", "RAB129", "RAB130", "RAB131", "RAB132",
+                "RAB135",
             ) else "❌"
             line = f"  {code}  {desc:<65} {has_fix}"
             if color:

@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-#### New checks (17 new, total 120)
+#### New checks (23 new, total 126)
 
 | Code | Rule | Fix |
 |------|------|-----|
@@ -27,6 +27,12 @@ All notable changes to this project will be documented in this file.
 | RAB127 | Redundant `else` in loop with `break` | ❌ |
 | RAB128 | `not ... in` → `not in` (PEP 8) | ✅ |
 | RAB129 | f-string in logging call → lazy `%s` formatting | ✅ |
+| RAB130 | `len([... for ...])` → `sum(1 for ...)` (avoid throwaway list) | ✅ |
+| RAB131 | `set([...])` / `tuple([...])` / `sorted([...])` / `dict([...])` → generator | ✅ |
+| RAB132 | `x = x + [..]` inside a loop (O(n²)) → `.append()` / `.extend()` | ✅ |
+| RAB133 | `list.pop(0)` / `list.insert(0, …)` → `collections.deque` | ❌ |
+| RAB134 | `sorted(x)[:k]` / `sorted(x)[-k:]` → `heapq.nsmallest` / `nlargest` | ❌ |
+| RAB135 | `for … in list(range(…))` → iterate `range(…)` directly | ✅ |
 
 ### Changed
 
