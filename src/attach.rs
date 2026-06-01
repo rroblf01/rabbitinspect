@@ -593,48 +593,55 @@ fn read_thread_state(pid: i32, tid: usize) -> char {
 /// One snapshot of every Python thread in the target: its OS state char plus a
 /// vec of "func\tfile\tline" entries, leaf-first.
 #[cfg(target_os = "linux")]
-pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, Vec<String>)>> {
+pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, u64, Vec<String>)>> {
     let details = interpreter_details(pid)?;
     let minor = (details.version_hex >> 16) & 0xff;
     let off = read_debug_offsets(pid, details.py_runtime_addr, minor)?;
 
+    // Reads while walking are best-effort: a frame/code object can be freed or
+    // moved by the target between reads (it keeps running while we sample), so a
+    // single EFAULT must NOT abort the whole snapshot. We treat a failed pointer
+    // read as 0 (ends that chain) and return whatever was recovered. Only the
+    // fatal setup above (`interpreter_details` / `read_debug_offsets`) propagates.
+    let g = |addr: usize| read_ptr(pid, addr).unwrap_or(0);
+
     let mut stacks = Vec::new();
-    let mut interp = read_ptr(pid, details.py_runtime_addr + off.interp_head)?;
+    let mut interp = g(details.py_runtime_addr + off.interp_head);
     let mut interp_guard = 0;
     while interp != 0 && interp_guard < 64 {
         interp_guard += 1;
-        let mut tstate = read_ptr(pid, interp + off.threads_head)?;
+        let mut tstate = g(interp + off.threads_head);
         let mut t_guard = 0;
         while tstate != 0 && t_guard < 4096 {
             t_guard += 1;
-            let mut frame = read_ptr(pid, tstate + off.tstate_current_frame)?;
+            let mut frame = g(tstate + off.tstate_current_frame);
             let mut stack = Vec::new();
             let mut depth = 0;
             while frame != 0 && depth < 512 {
                 depth += 1;
-                let code = read_ptr(pid, frame + off.frame_executable)?;
+                let code = g(frame + off.frame_executable);
                 if code != 0 {
-                    let file = read_pystr(pid, read_ptr(pid, code + off.code_filename)?);
-                    let func = read_pystr(pid, read_ptr(pid, code + off.code_name)?);
+                    let file = read_pystr(pid, g(code + off.code_filename));
+                    let func = read_pystr(pid, g(code + off.code_name));
                     if let (Some(file), Some(func)) = (file, func) {
                         let line = frame_line(pid, frame, code, &off);
                         stack.push(format!("{func}\t{file}\t{line}"));
                     }
                 }
-                frame = read_ptr(pid, frame + off.frame_previous)?;
+                frame = g(frame + off.frame_previous);
             }
             if !stack.is_empty() {
-                let native_tid = read_ptr(pid, tstate + off.tstate_native_thread_id)?;
+                let native_tid = g(tstate + off.tstate_native_thread_id);
                 let state = if native_tid != 0 {
                     read_thread_state(pid, native_tid)
                 } else {
                     'R'
                 };
-                stacks.push((state, stack));
+                stacks.push((state, native_tid as u64, stack));
             }
-            tstate = read_ptr(pid, tstate + off.tstate_next)?;
+            tstate = g(tstate + off.tstate_next);
         }
-        interp = read_ptr(pid, interp + off.interp_next)?;
+        interp = g(interp + off.interp_next);
     }
     Ok(stacks)
 }
@@ -671,9 +678,10 @@ pub fn attach_sample(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
     let stacks = sample_stacks(pid)
         .map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("sample failed: {e}")))?;
     let outer = PyList::empty(py);
-    for (state, stack) in &stacks {
+    for (state, tid, stack) in &stacks {
         let d = PyDict::new(py);
         d.set_item("state", state.to_string())?;
+        d.set_item("tid", *tid)?;
         d.set_item("frames", PyList::new(py, stack)?)?;
         outer.append(d)?;
     }

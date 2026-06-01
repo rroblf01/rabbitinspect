@@ -325,6 +325,9 @@ rabbitinspect perf run myscript.py --speedscope profile.speedscope.json
 # Attach to an already-running process — no code changes, no restart (Linux)
 rabbitinspect perf attach --pid 12345 --duration 5 --out report.html
 
+# ...and cut through framework/idle noise — show only your own code
+rabbitinspect perf attach --pid 12345 --duration 5 --app-root /path/to/project --out report.html
+
 # Compare two runs (before / after an optimization)
 rabbitinspect perf run myscript.py --json before.json
 # … make your change …
@@ -335,6 +338,7 @@ rabbitinspect perf diff before.json after.json --out diff.html
 The report includes:
 
 - **Top functions** by self/total time, an **interactive flamegraph** (click to zoom), and a **memory-over-time** chart.
+- **Flame chart (time order)** + **call timings**: each call shown separately along a time axis (a function called twice appears twice); hover for the call's duration. The table gives calls / total / avg / max ms per function.
 - **Per-function memory** (`perf run --memory`): live allocations attributed to functions via `tracemalloc`.
 - **On-CPU vs off-CPU** split (attach mode): how much self time was real CPU work vs waiting on sleep / I/O / locks.
 - **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).

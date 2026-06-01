@@ -36,6 +36,7 @@ class FunctionStat:
     self_pct: float
     total_pct: float
     off_cpu_ms: float = 0.0  # share of self time the thread was waiting (not on-CPU)
+    line: int = 0  # the source line most often sampled for this function (0 = unknown)
 
 
 @dataclass
@@ -56,6 +57,30 @@ class AsyncTaskInfo:
     name: str
     state: str  # 'pending' | 'done'
     stack: list[str]  # leaf-first "func\tfile\tline" entries
+
+
+@dataclass
+class Segment:
+    """One time-ordered call interval reconstructed from consecutive samples.
+
+    A sampling profiler never sees calls/returns directly; a run of consecutive
+    samples that show the same function at the same stack depth (on one thread)
+    is treated as a single continuous call. Two separate requests therefore yield
+    two separate segments for the same function — the time-order view, not the
+    aggregate.
+    """
+
+    func: str
+    file: str
+    line: int
+    depth: int
+    tid: int
+    start_ms: float
+    end_ms: float
+
+    @property
+    def duration_ms(self) -> float:
+        return self.end_ms - self.start_ms
 
 
 @dataclass
@@ -154,8 +179,8 @@ class ProfileResult:
     def peak_rss_bytes(self) -> float:
         return max((b for _, b in self.rss), default=0.0)
 
-    def to_html(self) -> str:
-        return render_html(self)
+    def to_html(self, app_root: str | None = None) -> str:
+        return render_html(self, app_root=app_root)
 
 
 def _parse_frame(entry: str) -> tuple[str, str, int]:
@@ -182,6 +207,7 @@ def aggregate(raw: dict) -> ProfileResult:
     off_self_counts: Counter[tuple[str, str]] = Counter()
     total_counts: Counter[tuple[str, str]] = Counter()
     folded_counts: Counter[str] = Counter()
+    line_counts: dict[tuple[str, str], Counter[int]] = {}
 
     # Per-sample OS thread state (remote attach only). 'R' == on-CPU; anything
     # else (S/D/…) == off-CPU (sleeping, blocked I/O, lock wait). Absent for the
@@ -204,10 +230,12 @@ def aggregate(raw: dict) -> ProfileResult:
         seen: set[tuple[str, str]] = set()
         names_root_first: list[str] = []
         for fid in reversed(stack):
-            func, file, _ = parsed[fid]
+            func, file, line = parsed[fid]
             key = (func, file)
             if key not in seen:
                 seen.add(key)
+            if line:
+                line_counts.setdefault(key, Counter())[line] += 1
             names_root_first.append(func)
         for key in seen:
             total_counts[key] += 1
@@ -215,20 +243,36 @@ def aggregate(raw: dict) -> ProfileResult:
 
     denom = sample_count if sample_count else 1
 
+    # Time is wall-clock per *tick*, not per per-thread stack. Each sampling tick
+    # captures one stack per live thread, all stamped with the same timestamp; so
+    # the number of distinct timestamps is the number of ticks. Weighting by ticks
+    # (not by len(stacks)) means a function that ran for the whole window reads as
+    # the full duration regardless of how many *other* threads were also sampled —
+    # otherwise its time would be diluted by the concurrent-thread count. For the
+    # single-threaded case ticks == sample_count, so this is unchanged.
+    ts = raw.get('ts') or []
+    num_ticks = len(set(ts)) if ts and len(ts) == len(stacks) else sample_count
+    weight = duration_ms / num_ticks if num_ticks else 0.0
+
     functions: list[FunctionStat] = []
     for key in total_counts:
         func, file = key
         sc = self_counts.get(key, 0)
         tc = total_counts[key]
+        self_ms = sc * weight
+        total_ms = tc * weight
+        lc = line_counts.get(key)
+        rep_line = lc.most_common(1)[0][0] if lc else 0
         functions.append(
             FunctionStat(
                 name=func,
                 file=file,
-                self_ms=sc / denom * duration_ms,
-                total_ms=tc / denom * duration_ms,
-                self_pct=sc / denom * 100.0,
-                total_pct=tc / denom * 100.0,
-                off_cpu_ms=off_self_counts.get(key, 0) / denom * duration_ms,
+                self_ms=self_ms,
+                total_ms=total_ms,
+                self_pct=(self_ms / duration_ms * 100.0) if duration_ms else 0.0,
+                total_pct=(total_ms / duration_ms * 100.0) if duration_ms else 0.0,
+                off_cpu_ms=off_self_counts.get(key, 0) * weight,
+                line=rep_line,
             )
         )
     functions.sort(key=lambda f: f.self_ms, reverse=True)
@@ -571,7 +615,7 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
         rows.append(
             '<tr>'
             f'<td class="name">{html.escape(f.name)}</td>'
-            f'<td class="file">{html.escape(f.file)}</td>'
+            f'<td class="file">{html.escape(f.file)}{f":{f.line}" if f.line else ""}</td>'
             f'<td class="num">{f.self_ms:.1f}</td>'
             f'<td class="num">{f.total_ms:.1f}</td>'
             f'<td class="num">{f.off_cpu_ms:.1f}</td>'
@@ -580,6 +624,48 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
             '</tr>'
         )
     return '\n'.join(rows)
+
+
+def _is_app_frame(file: str, root: str) -> bool:
+    """True if ``file`` is the user's own code under ``root`` (not stdlib/deps).
+
+    Excludes synthetic frames (``<frozen ...>``), anything outside ``root``, and
+    third-party installs (site-packages / venv) so the report can surface the
+    application's own functions instead of framework/idle noise.
+    """
+    if not file or file.startswith('<'):
+        return False
+    try:
+        f = os.path.realpath(file)
+    except OSError:
+        f = file
+    if not f.startswith(root):
+        return False
+    parts = f.split(os.sep)
+    return not any(p in ('site-packages', 'dist-packages', '.venv', 'venv') for p in parts)
+
+
+def _app_functions_section(functions: list[FunctionStat], app_root: str | None) -> str:
+    if not app_root:
+        return ''
+    root = os.path.realpath(app_root)
+    app = [f for f in functions if _is_app_frame(f.file, root)]
+    if not app:
+        return (
+            '\n  <h2>Application functions <span class="muted">'
+            f'(under {html.escape(root)})</span></h2>'
+            '\n  <p class="muted">No samples landed in your own code during this run '
+            '(the time was spent in the framework / standard library / waiting).</p>\n'
+        )
+    return f"""
+  <h2>Top application functions <span class="muted">(your code under {html.escape(root)}; excludes stdlib &amp; dependencies)</span></h2>
+  <table>
+    <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th class="num">Wait ms</th><th>Self %</th></tr></thead>
+    <tbody>
+    {_func_rows(app)}
+    </tbody>
+  </table>
+"""
 
 
 def _mem_section(allocs: list[MemAlloc], limit: int = 25) -> str:
@@ -725,11 +811,16 @@ def _database_section(result: ProfileResult) -> str:
 """
 
 
-def _hotspot_lints_section(result: ProfileResult) -> str:
-    if not result.hotspot_lints:
+def _hotspot_lints_section(result: ProfileResult, app_root: str | None = None) -> str:
+    hotspots = result.hotspot_lints
+    if app_root:
+        # Linting stdlib / dependencies is noise — restrict to the user's code.
+        root = os.path.realpath(app_root)
+        hotspots = [h for h in hotspots if _is_app_frame(h.file, root)]
+    if not hotspots:
         return ''
     blocks = []
-    for h in result.hotspot_lints:
+    for h in hotspots:
         items = '\n'.join(
             f'<li><strong>{html.escape(f["code"])}</strong> '
             f'<span class="muted">line {f["line"]}</span> — {html.escape(f["message"])}</li>'
@@ -745,6 +836,30 @@ def _hotspot_lints_section(result: ProfileResult) -> str:
   <h2>Hotspots with lint findings <span class="muted">(hot code that also trips a static rule)</span></h2>
   {''.join(blocks)}
 """
+
+
+def _zoom_script(css_class: str) -> str:
+    """Click-to-zoom JS for any SVG of ``css_class`` whose <g> carry data-f0/f1
+    (normalized [0,1] x-range). Lives in HTML context (currentScript is null for
+    SVG <script>); reads width from the SVG viewBox. Same logic for the
+    aggregate flamegraph and the time-order flame chart."""
+    return (
+        '<script>'
+        'document.querySelectorAll("svg.' + css_class + '").forEach(function(s){'
+        'var W=s.viewBox.baseVal.width;'
+        'var gs=[].slice.call(s.querySelectorAll("g[data-f0]"));'
+        'function zoom(a,b){var sp=b-a;if(sp<=0)return;gs.forEach(function(g){'
+        'var f0=+g.dataset.f0,f1=+g.dataset.f1,n0=(f0-a)/sp,n1=(f1-a)/sp;'
+        'if(n1<=0.0001||n0>=0.9999){g.style.display="none";return;}g.style.display="";'
+        'var r=g.querySelector("rect"),t=g.querySelector("text");'
+        'var x=Math.max(0,n0)*W,w=(Math.min(1,n1)-Math.max(0,n0))*W;'
+        'r.setAttribute("x",x.toFixed(1));r.setAttribute("width",Math.max(w-1,0.5).toFixed(1));'
+        'if(t){t.setAttribute("x",(x+3).toFixed(1));t.style.display=w>28?"":"none";}});}'
+        'gs.forEach(function(g){g.style.cursor="pointer";g.addEventListener("click",function(e){'
+        'e.stopPropagation();zoom(+g.dataset.f0,+g.dataset.f1);});});'
+        's.addEventListener("click",function(){zoom(0,1);});'
+        '});</script>'
+    )
 
 
 def _flame_color(name: str) -> str:
@@ -831,37 +946,171 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
 
     emit(root_children, 0, 0)
     height = (max_depth + 1) * row_h + pad
-    # Click a frame to zoom into its sub-tree; click the background to reset.
-    # The script lives in HTML context (not inside the SVG) so it runs reliably:
-    # `document.currentScript` is null for SVG <script> elements, and querying by
-    # class avoids depending on it. Width comes from the SVG's own viewBox.
-    script = (
-        '<script>'
-        'document.querySelectorAll("svg.flame").forEach(function(s){'
-        'var W=s.viewBox.baseVal.width;'
-        'var gs=[].slice.call(s.querySelectorAll("g[data-f0]"));'
-        'function zoom(a,b){var sp=b-a;if(sp<=0)return;gs.forEach(function(g){'
-        'var f0=+g.dataset.f0,f1=+g.dataset.f1,n0=(f0-a)/sp,n1=(f1-a)/sp;'
-        'if(n1<=0.0001||n0>=0.9999){g.style.display="none";return;}g.style.display="";'
-        'var r=g.querySelector("rect"),t=g.querySelector("text");'
-        'var x=Math.max(0,n0)*W,w=(Math.min(1,n1)-Math.max(0,n0))*W;'
-        'r.setAttribute("x",x.toFixed(1));r.setAttribute("width",Math.max(w-1,0.5).toFixed(1));'
-        'if(t){t.setAttribute("x",(x+3).toFixed(1));t.style.display=w>28?"":"none";}});}'
-        'gs.forEach(function(g){g.style.cursor="pointer";g.addEventListener("click",function(e){'
-        'e.stopPropagation();zoom(+g.dataset.f0,+g.dataset.f1);});});'
-        's.addEventListener("click",function(){zoom(0,1);});'
-        '});</script>'
-    )
     svg = (
         f'<svg viewBox="0 0 {width} {height}" class="chart flame" role="img" '
         f'aria-label="Flamegraph" preserveAspectRatio="xMidYMin meet">'
         f'{"".join(rects)}</svg>'
     )
-    return svg + script
+    return svg + _zoom_script('flame')
 
 
-def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
-    """Render a self-contained HTML report."""
+def _build_segments(raw: dict) -> list[Segment]:
+    """Reconstruct time-ordered call segments from raw samples.
+
+    Per thread (by ``tid``), a run of consecutive samples showing the same
+    function at the same depth becomes one segment. A function called twice
+    produces two segments. Identity is (func, file) — line is kept for display
+    but ignored for merging, so a function running across many lines stays one
+    segment instead of fragmenting per source line.
+    """
+    frames = raw.get('frames') or []
+    stacks = raw.get('stacks') or []
+    ts = raw.get('ts') or []
+    tids = raw.get('tids') or []
+    if not stacks or len(ts) != len(stacks):
+        return []
+    parsed = [_parse_frame(f) for f in frames]
+
+    groups: dict[int, list[int]] = {}
+    for i in range(len(stacks)):
+        groups.setdefault(tids[i] if i < len(tids) else 0, []).append(i)
+
+    segments: list[Segment] = []
+    for tid, idxs in groups.items():
+        idxs.sort(key=lambda i: ts[i])
+        tss = [ts[i] for i in idxs]
+        gaps = sorted(b - a for a, b in zip(tss, tss[1:]) if b > a)
+        interval = gaps[len(gaps) // 2] if gaps else 1.0
+        open_segs: list[dict] = []  # root-first, currently-open frames
+        for i in idxs:
+            t = ts[i]
+            keys = [parsed[fid] for fid in reversed(stacks[i])]  # (func, file, line) root-first
+            common = 0
+            while (
+                common < len(open_segs)
+                and common < len(keys)
+                and open_segs[common]['func'] == keys[common][0]
+                and open_segs[common]['file'] == keys[common][1]
+            ):
+                common += 1
+            while len(open_segs) > common:  # close frames that ended
+                seg = open_segs.pop()
+                segments.append(
+                    Segment(seg['func'], seg['file'], seg['line'], len(open_segs), tid, seg['start'], t)
+                )
+            for d in range(common, len(keys)):
+                func, file, line = keys[d]
+                open_segs.append({'func': func, 'file': file, 'line': line, 'start': t})
+        end = (tss[-1] + interval) if tss else 0.0
+        while open_segs:  # flush still-open frames at the end
+            seg = open_segs.pop()
+            segments.append(
+                Segment(seg['func'], seg['file'], seg['line'], len(open_segs), tid, seg['start'], end)
+            )
+    return segments
+
+
+def _flamechart_svg(segments: list[Segment], duration_ms: float, width: int = 1100, row_h: int = 16) -> str:
+    """Time-order flame chart: x = wall-clock time, one box per call.
+
+    Threads are stacked in their own vertical bands. Hovering a box shows that
+    call's duration. Click to zoom a time range, click the background to reset.
+    """
+    if not segments or duration_ms <= 0:
+        return '<p class="muted">Time-order view needs timestamped samples.</p>'
+
+    max_boxes = 6000
+    truncated = len(segments) > max_boxes
+    segs = sorted(segments, key=lambda s: s.duration_ms, reverse=True)[:max_boxes] if truncated else segments
+
+    by_tid: dict[int, list[Segment]] = {}
+    for s in segs:
+        by_tid.setdefault(s.tid, []).append(s)
+
+    pad = 2
+    drawable = width - 2 * pad
+    scale = drawable / duration_ms
+    label_h = 14
+    boxes: list[str] = []
+    y = 0
+    for tid in sorted(by_tid):
+        tsegs = by_tid[tid]
+        max_d = max(s.depth for s in tsegs)
+        boxes.append(f'<text x="{pad}" y="{y + 11}" font-size="11" fill="#374151">thread {tid}</text>')
+        band_top = y + label_h
+        for s in tsegs:
+            x = pad + s.start_ms * scale
+            w = max(s.duration_ms * scale, 0.4)
+            by = band_top + s.depth * row_h
+            loc = f'{s.file}:{s.line}' if s.line else s.file
+            title = html.escape(f'{s.func}  —  {s.duration_ms:.1f} ms\n{loc}')
+            text = ''
+            if w > 30:
+                shown = s.func if len(s.func) * 6.5 < w else s.func[: max(1, int(w / 6.5))] + '…'
+                text = (
+                    f'<text x="{x + 3:.1f}" y="{by + row_h - 4}" font-size="10" '
+                    f'fill="#1a1a1a" pointer-events="none">{html.escape(shown)}</text>'
+                )
+            boxes.append(
+                f'<g data-f0="{s.start_ms / duration_ms:.6f}" data-f1="{s.end_ms / duration_ms:.6f}">'
+                f'<title>{title}</title>'
+                f'<rect x="{x:.1f}" y="{by}" width="{w:.1f}" height="{row_h - 1}" rx="1" '
+                f'fill="{_flame_color(s.func)}" stroke="#fff" stroke-width="0.4"/>{text}</g>'
+            )
+        y = band_top + (max_d + 1) * row_h + 6
+    height = y + pad
+    note = f'<p class="muted">Showing the {max_boxes} longest calls.</p>' if truncated else ''
+    svg = (
+        f'<svg viewBox="0 0 {width} {height}" class="chart flamechart" role="img" '
+        f'aria-label="Flame chart (time order)" preserveAspectRatio="xMidYMin meet">'
+        f'{"".join(boxes)}</svg>'
+    )
+    return note + svg + _zoom_script('flamechart')
+
+
+def _call_timings_section(segments: list[Segment], limit: int = 40) -> str:
+    if not segments:
+        return ''
+    groups: dict[tuple[str, str], list[float]] = {}
+    for s in segments:
+        groups.setdefault((s.func, s.file), []).append(s.duration_ms)
+    items = sorted(groups.items(), key=lambda kv: sum(kv[1]), reverse=True)
+    rows = []
+    for (func, file), durs in items[:limit]:
+        n = len(durs)
+        total = sum(durs)
+        rows.append(
+            '<tr>'
+            f'<td class="name">{html.escape(func)}</td>'
+            f'<td class="file">{html.escape(file)}</td>'
+            f'<td class="num">{n}</td>'
+            f'<td class="num">{total:.1f}</td>'
+            f'<td class="num">{total / n:.1f}</td>'
+            f'<td class="num">{max(durs):.1f}</td>'
+            '</tr>'
+        )
+    return f"""
+  <h2>Call timings <span class="muted">(time-order: every call counted separately)</span></h2>
+  <table>
+    <thead><tr><th>Function</th><th>File</th><th class="num">Calls</th><th class="num">Total ms</th><th class="num">Avg ms</th><th class="num">Max ms</th></tr></thead>
+    <tbody>
+    {chr(10).join(rows)}
+    </tbody>
+  </table>
+"""
+
+
+def render_html(
+    result: ProfileResult,
+    title: str = 'rabbitinspect perf report',
+    app_root: str | None = None,
+) -> str:
+    """Render a self-contained HTML report.
+
+    If ``app_root`` is given, an extra "Top application functions" section lists
+    only the user's own code under that path (stdlib and dependencies excluded),
+    cutting through framework / idle-thread noise.
+    """
     peak_mb = result.peak_rss_bytes / (1024 * 1024)
     cpu_card = ''
     if result.on_cpu_ms or result.off_cpu_ms:
@@ -870,6 +1119,15 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
         cpu_card = (
             f'<div class="card"><div class="v">{on_pct:.0f}%</div>'
             f'<div class="k">On-CPU</div></div>'
+        )
+    segments = _build_segments(result.raw)
+    flamechart = ''
+    if segments:
+        flamechart = (
+            '\n  <h2>Flame chart <span class="muted">(time order — each call shown separately; hover for duration, click to zoom)</span></h2>\n  '
+            + _flamechart_svg(segments, result.duration_ms)
+            + '\n'
+            + _call_timings_section(segments)
         )
     folded_text = '\n'.join(f'{stack} {count}' for stack, count in result.folded)
     payload = json.dumps(
@@ -907,6 +1165,7 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }}
   th {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
   td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  th.num {{ text-align: right; }}
   td.file {{ color: #6b7280; font-size: 12px; }}
   td.bar {{ position: relative; width: 160px; }}
   td.bar span {{ display: inline-block; height: 12px; background: #3b82f6; border-radius: 2px; vertical-align: middle; }}
@@ -915,6 +1174,8 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   .flame {{ max-width: 1100px; }}
   .flame rect {{ cursor: default; }}
   .flame g:hover rect {{ stroke: #1f2937; stroke-width: 1; }}
+  .flamechart {{ max-width: 1100px; }}
+  .flamechart g:hover rect {{ stroke: #1f2937; stroke-width: 1; }}
   .axis {{ font-size: 10px; fill: #9ca3af; }}
   .muted {{ color: #9ca3af; }}
   .warn {{ color: #b45309; }}
@@ -943,10 +1204,12 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   {_mem_section(result.mem_allocations)}
   {_requests_section(result)}
   {_database_section(result)}
-  {_hotspot_lints_section(result)}
+  {_hotspot_lints_section(result, app_root)}
   <h2>Flamegraph <span class="muted">(width = share of samples; click to zoom, click background to reset)</span></h2>
   {_flamegraph_svg(result)}
-  <h2>Top functions by self time</h2>
+  {flamechart}
+  {_app_functions_section(result.functions, app_root)}
+  <h2>All functions by self time <span class="muted">(includes stdlib, dependencies &amp; idle threads)</span></h2>
   <table>
     <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th class="num">Wait ms</th><th>Self %</th></tr></thead>
     <tbody>
@@ -1092,6 +1355,7 @@ def render_diff_html(
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }}
   th {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
   td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  th.num {{ text-align: right; }}
   td.file {{ color: #6b7280; font-size: 12px; }}
   .reg {{ color: #e03131; font-weight: 600; }}
   .imp {{ color: #2b8a3e; font-weight: 600; }}
@@ -1330,6 +1594,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
     stacks: list[list[int]] = []
     sample_ts: list[float] = []
     states: list[str] = []
+    tids: list[int] = []
     rss: list[tuple[float, float]] = []
 
     def intern(entry: str) -> int:
@@ -1340,17 +1605,35 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
             frame_index[entry] = idx
         return idx
 
+    import os
+
+    def _alive() -> bool:
+        return os.path.exists(f'/proc/{pid}')
+
     start = time.perf_counter()
+    consecutive_fail = 0
     while time.perf_counter() - start < duration_s:
         try:
             snapshot = _core.attach_sample(pid)
+            consecutive_fail = 0
         except OSError:
-            break  # target exited or became unreadable
+            # A single failed read is expected: the target keeps running, so a
+            # frame/code object can vanish mid-walk. Skip this sample and retry
+            # rather than ending the whole session. Only give up if the process
+            # is actually gone, or after many consecutive failures.
+            if not _alive():
+                break
+            consecutive_fail += 1
+            if consecutive_fail >= 100:
+                break
+            time.sleep(interval_ms / 1000.0)
+            continue
         now = (time.perf_counter() - start) * 1000.0
         for thread in snapshot:
             stacks.append([intern(e) for e in thread['frames']])
             sample_ts.append(now)
             states.append(thread.get('state', 'R'))
+            tids.append(int(thread.get('tid', 0)))
         rss_bytes = _read_remote_rss(pid)
         if rss_bytes is not None:
             rss.append((now, rss_bytes))
@@ -1360,7 +1643,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
         'frames': frames,
         'stacks': stacks,
         'ts': sample_ts,
-        'tids': [],
+        'tids': tids,
         'states': states,
         'rss': rss,
         'spans': [],
@@ -1374,7 +1657,9 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
     return result
 
 
-def _attach_cli(pid: int, duration: float | None, out: str, interval_ms: float) -> int:
+def _attach_cli(
+    pid: int, duration: float | None, out: str, interval_ms: float, app_root: str | None = None
+) -> int:
     """Inspect / sample an already-running process (F4)."""
     try:
         info = _core.attach_python_info(pid)
@@ -1403,7 +1688,7 @@ def _attach_cli(pid: int, duration: float | None, out: str, interval_ms: float) 
     print(f'Sampling for {duration:.1f}s …', file=sys.stderr)
     result = sample_remote(pid, duration_s=duration, interval_ms=interval_ms)
     with open(out, 'w', encoding='utf-8') as f:
-        f.write(result.to_html())
+        f.write(result.to_html(app_root=app_root))
     print(f'  {result.sample_count} samples; report written to {out}', file=sys.stderr)
     if result.functions:
         print(f'  hottest: {result.functions[0].name} ({result.functions[0].self_pct:.1f}% self)', file=sys.stderr)
@@ -1426,6 +1711,8 @@ def run_perf_cli(argv: list[str]) -> int:
     runp.add_argument('--interval', type=float, default=5.0, help='Sampling interval in ms')
     runp.add_argument('--max-depth', type=int, default=256, help='Maximum stack depth to walk')
     runp.add_argument('--memory', action='store_true', help='Also record per-function allocations (tracemalloc)')
+    runp.add_argument('--app-root', metavar='PATH', help='Add a section with only your code under PATH')
+    runp.add_argument('--app-only', action='store_true', help='Shorthand for --app-root <current directory>')
     runp.add_argument('script', help='Python script to profile')
     runp.add_argument('script_args', nargs=argparse.REMAINDER, help='Arguments passed to the script')
 
@@ -1434,6 +1721,8 @@ def run_perf_cli(argv: list[str]) -> int:
     attachp.add_argument('--duration', type=float, default=None, help='Seconds to sample (omit for info only)')
     attachp.add_argument('--out', default='rabbitinspect-perf.html', help='HTML report output path')
     attachp.add_argument('--interval', type=float, default=10.0, help='Sampling interval in ms')
+    attachp.add_argument('--app-root', metavar='PATH', help='Add a section with only your code under PATH')
+    attachp.add_argument('--app-only', action='store_true', help='Shorthand for --app-root <current directory>')
 
     diffp = sub.add_parser('diff', help='Compare two profile JSONs and write an HTML diff')
     diffp.add_argument('before', help='Baseline profile JSON (from `perf run --json`)')
@@ -1441,8 +1730,16 @@ def run_perf_cli(argv: list[str]) -> int:
     diffp.add_argument('--out', default='rabbitinspect-perf-diff.html', help='HTML diff output path')
 
     args = parser.parse_args(argv)
+
+    def _resolve_app_root() -> str | None:
+        if getattr(args, 'app_root', None):
+            return args.app_root
+        if getattr(args, 'app_only', False):
+            return os.getcwd()
+        return None
+
     if args.cmd == 'attach':
-        return _attach_cli(args.pid, args.duration, args.out, args.interval)
+        return _attach_cli(args.pid, args.duration, args.out, args.interval, _resolve_app_root())
     if args.cmd == 'diff':
         before = load_profile_json(args.before)
         after = load_profile_json(args.after)
@@ -1464,7 +1761,7 @@ def run_perf_cli(argv: list[str]) -> int:
             trace_memory=args.memory,
         )
         with open(args.out, 'w', encoding='utf-8') as f:
-            f.write(result.to_html())
+            f.write(result.to_html(app_root=_resolve_app_root()))
         if args.speedscope:
             import json as _json
 

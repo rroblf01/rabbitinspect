@@ -160,6 +160,47 @@ def test_aggregate_self_vs_total():
     assert result.peak_rss_bytes == 2000.0
 
 
+def test_aggregate_time_not_diluted_by_threads():
+    # 4 ticks, 2 threads each tick (8 stacks). Same timestamp per tick.
+    # Thread A always runs 'work'; thread B always runs 'idle'.
+    raw = {
+        'frames': ['work\tx.py\t1', 'idle\ty.py\t1'],
+        'stacks': [[0], [1], [0], [1], [0], [1], [0], [1]],
+        'ts': [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0],  # shared per tick
+        'tids': [1, 2, 1, 2, 1, 2, 1, 2],
+        'rss': [],
+        'duration_ms': 100.0,
+        'sample_count': 8,
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    by = {f.name: f for f in result.functions}
+    # 'work' ran the entire window on its thread → full duration, NOT 100/2.
+    # (the bug normalized by len(stacks)=8, halving it to 50 ms.)
+    assert by['work'].self_ms == pytest.approx(100.0)
+    assert by['work'].self_pct == pytest.approx(100.0)
+    assert by['idle'].self_ms == pytest.approx(100.0)
+
+
+def test_aggregate_reports_hot_line():
+    # 'get' sampled mostly at line 10, once at line 8 → representative line = 10.
+    raw = {
+        'frames': ['get\turls.py\t10', 'get\turls.py\t8'],
+        'stacks': [[0], [0], [0], [1]],
+        'ts': [0.0, 1.0, 2.0, 3.0],
+        'tids': [1, 1, 1, 1],
+        'rss': [],
+        'duration_ms': 40.0,
+        'sample_count': 4,
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    get = next(f for f in result.functions if f.name == 'get')
+    assert get.line == 10
+    # the line shows up in the rendered file cell as file:line
+    assert 'urls.py:10' in render_html(result)
+
+
 def test_aggregate_off_cpu_split():
     # 4 samples: leaf 'work' on-CPU twice, leaf 'wait' off-CPU (sleeping) twice.
     raw = {
@@ -207,12 +248,72 @@ def _synthetic_result() -> ProfileResult:
 def test_render_html_sections():
     html = render_html(_synthetic_result())
     assert '<table' in html
-    assert 'Top functions' in html
+    assert 'functions by self time' in html
     assert 'Memory over time' in html
     assert 'Folded stacks' in html
     assert 'compute' in html
     assert 'rabbitinspect-perf-data' in html  # embedded JSON payload
     assert '20.0 MB peak' in html  # RSS chart label
+
+
+def _two_call_raw():
+    # main runs the whole time; get is called twice (10..30 and 40..50).
+    return {
+        'frames': ['main\ta.py\t1', 'get\ta.py\t5'],
+        'stacks': [[0], [1, 0], [1, 0], [0], [1, 0], [0]],  # leaf-first
+        'ts': [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+        'tids': [1, 1, 1, 1, 1, 1],
+        'rss': [],
+        'duration_ms': 60.0,
+        'sample_count': 6,
+        'truncated': False,
+    }
+
+
+def test_build_segments_counts_each_call():
+    from rabbitinspect.perf import _build_segments
+
+    segs = _build_segments(_two_call_raw())
+    gets = [s for s in segs if s.func == 'get']
+    # 'get' was called twice → two separate segments (time order, not aggregate)
+    assert len(gets) == 2
+    assert sorted(round(s.duration_ms) for s in gets) == [10, 20]
+    main = [s for s in segs if s.func == 'main'][0]
+    assert main.duration_ms >= 50  # open the whole run
+
+
+def test_call_timings_section_counts_and_durations():
+    from rabbitinspect.perf import _build_segments, _call_timings_section
+
+    html = _call_timings_section(_build_segments(_two_call_raw()))
+    assert 'Call timings' in html
+    # get: 2 calls, total 30, avg 15, max 20
+    row = html.split('get')[1].split('</tr>')[0]
+    assert '>2<' in row  # call count
+    assert '20.0' in row  # max ms
+
+
+def test_flamechart_in_report():
+    result = aggregate(_two_call_raw())
+    html = result.to_html()
+    assert 'Flame chart' in html
+    assert 'class="chart flamechart"' in html
+    assert 'thread 1' in html
+    assert 'data-f0' in html
+    # hover tooltip carries the per-call duration
+    assert 'ms' in html
+    # its own zoom handler is wired
+    assert 'querySelectorAll("svg.flamechart")' in html
+
+
+def test_flamechart_absent_without_timestamps():
+    from rabbitinspect.perf import _build_segments
+
+    raw = _two_call_raw()
+    raw['ts'] = []  # no timestamps → no time-order view
+    assert _build_segments(raw) == []
+    result = aggregate(raw)
+    assert 'Flame chart' not in result.to_html()
 
 
 def test_render_html_flamegraph():
@@ -336,6 +437,73 @@ def test_render_diff_html_escapes():
     out = render_diff_html(r, r)
     assert '<script>' not in out
     assert '&lt;script&gt;' in out
+
+
+def test_app_functions_filter():
+    from rabbitinspect.perf import _is_app_frame, render_html
+
+    root = '/home/me/proj'
+    # app code under root, not in a venv
+    assert _is_app_frame('/home/me/proj/app/views.py', root)
+    # dependency inside the project's venv → not app code
+    assert not _is_app_frame('/home/me/proj/.venv/lib/python3.14/site-packages/django/x.py', root)
+    # stdlib outside root → not app code
+    assert not _is_app_frame('/usr/lib/python3.14/socket.py', root)
+    # synthetic frames → not app code
+    assert not _is_app_frame('<frozen importlib._bootstrap>', root)
+
+    result = ProfileResult(
+        100.0, 10, False,
+        [
+            FunctionStat('readinto', '/usr/lib/python3.14/socket.py', 60.0, 60.0, 60.0, 60.0),
+            FunctionStat('get', '/home/me/proj/app/views.py', 5.0, 5.0, 0, 5.0),
+        ],
+        [], [],
+    )
+    # without app_root: only the full table, no app section
+    assert 'Top application functions' not in render_html(result)
+    # with app_root: the app section appears and lists only the user's function
+    html = render_html(result, app_root='/home/me/proj')
+    assert 'Top application functions' in html
+    app_part = html.split('Top application functions')[1].split('All functions by self time')[0]
+    assert 'get' in app_part
+    assert 'readinto' not in app_part  # stdlib excluded from the app section
+
+
+def test_hotspots_filtered_by_app_root():
+    from rabbitinspect.perf import HotspotLint, render_html
+
+    result = ProfileResult(
+        100.0, 10, False, [], [], [],
+        hotspot_lints=[
+            HotspotLint('myview', '/home/me/proj/app/views.py', 50.0,
+                        [{'code': 'RAB001', 'line': 3, 'message': 'x'}]),
+            HotspotLint('select', '/usr/lib/python3.14/selectors.py', 40.0,
+                        [{'code': 'RAB002', 'line': 9, 'message': 'y'}]),
+            HotspotLint('inner', '/home/me/proj/.venv/lib/python3.14/site-packages/django/x.py', 30.0,
+                        [{'code': 'RAB003', 'line': 1, 'message': 'z'}]),
+        ],
+    )
+    # no app_root → all hotspots shown (current behavior)
+    full = render_html(result)
+    assert 'myview' in full and 'select' in full and 'inner' in full
+    # app_root → only the user's own code, no stdlib, no .venv
+    scoped = render_html(result, app_root='/home/me/proj')
+    assert 'myview' in scoped
+    assert 'selectors.py' not in scoped
+    assert 'site-packages' not in scoped
+
+
+def test_app_functions_section_empty():
+    from rabbitinspect.perf import render_html
+
+    result = ProfileResult(
+        100.0, 10, False,
+        [FunctionStat('readinto', '/usr/lib/python3.14/socket.py', 60.0, 60.0, 60.0, 60.0)],
+        [], [],
+    )
+    html = render_html(result, app_root='/home/me/proj')
+    assert 'No samples landed in your own code' in html
 
 
 def test_render_html_truncated_warning():

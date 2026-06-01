@@ -108,7 +108,7 @@ def test_end_to_end_profile_and_report(tmp_path):
 
     # HTML report has the key sections
     html = result.to_html()
-    assert 'Top functions' in html
+    assert 'functions by self time' in html
     assert 'Hotspots with lint findings' in html
 
     # speedscope export is non-empty and well-formed

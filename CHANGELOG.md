@@ -48,6 +48,14 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 
 ### Added — export, demo & docs
 
+- **Flame chart (time order)** + **call timings**: alongside the aggregate
+  flamegraph, the report now reconstructs time-ordered call segments from the
+  samples — x is wall-clock time, threads in their own bands, and a function
+  called twice shows up as two boxes (not summed). Hover a box for that call's
+  duration; click to zoom a time range. A companion "Call timings" table lists,
+  per function, the number of calls and total / average / max ms. Remote
+  `attach_sample` now reports each thread's `tid` so segments can be split per
+  thread. `perf.Segment` / `_build_segments`.
 - **Interactive flamegraph**: the HTML report embeds a self-contained icicle
   flamegraph (inline SVG) built from the folded stacks — frame width is the share
   of samples, hover shows sample count / % / ms, **click a frame to zoom into its
@@ -58,6 +66,29 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   records live allocations via `tracemalloc` at stop and attributes each to its
   function (AST line ranges), shown as a "Top allocations by size" table.
   `ProfileResult.mem_allocations` / `MemAlloc`.
+- **Source line per function**: function tables now show `file:line`, where the
+  line is the source line most often sampled for that function — for a hot leaf
+  that points straight at the slow statement (e.g. the `time.sleep` line).
+  `FunctionStat.line`. Hotspot/lint and tracemalloc sections already had lines.
+- **Hotspot section respects `--app-root`**: when an app root is given, the
+  "Hotspots with lint findings" section is now scoped to your code (stdlib and
+  `site-packages`/`.venv` no longer appear there), matching the function filter.
+- **Report table headers** for numeric columns are right-aligned to match their
+  values (were left-aligned, looking shifted).
+- **Fixed time dilution with multiple threads**: `aggregate` normalized
+  per-function time by `len(stacks)` (one stack *per thread per tick*), so a
+  function's reported ms was divided by the number of concurrently-sampled
+  threads — e.g. a 5 s request on a server with 3 live threads read as ~1.7 s.
+  Time is now weighted per *tick* (distinct sample timestamp), so a function that
+  ran the whole window reads as the full duration regardless of other threads.
+  Single-threaded profiles are unchanged. `self_pct`/`total_pct` are now wall-time
+  fractions. (Per-thread time can sum above 100% across threads, as expected.)
+- **Application-code filter** (`perf run --app-only` / `perf attach --app-root PATH`):
+  a wall-clock sampler over a mostly-idle server is dominated by framework /
+  stdlib / idle-thread frames (`socket.readinto`, `selectors.select`, the Django
+  autoreloader), burying your own code. The report now adds a "Top application
+  functions" section listing only code under your project root (stdlib and
+  `site-packages`/`.venv` excluded). `render_html(..., app_root=...)`.
 - **asyncio task awareness**: the CPU sampler only sees running OS threads, so
   `await`-ing coroutines (the common case under load) were invisible. New
   `perf.AsyncSampler` / `profile_asyncio(main)` sample the event loop's tasks via
@@ -104,6 +135,12 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 - **Remote memory timeline**: `perf.sample_remote` now samples the target's
   resident memory (`/proc/<pid>/status`) alongside stacks, so the memory-over-time
   chart works for attached processes too — not just in-process runs.
+- **Resilient remote sampling**: a frame or code object in the live target can be
+  freed/moved between reads, which previously made one transient `EFAULT` abort
+  the whole attach session early. The stack walk is now best-effort (a failed
+  read ends that one chain, never the snapshot), and `sample_remote` skips a bad
+  sample and retries — only stopping when `/proc/<pid>` is gone or after many
+  consecutive failures. Attach now runs the full requested duration.
 - **CLI**: `rabbitinspect perf attach --pid <PID> --duration <S> --out report.html`
   samples an already-running server with **no code changes** and writes the same
   HTML report (top functions, memory timeline, on/off-CPU, flamegraph,
