@@ -1,7 +1,6 @@
 """Tests for SQL/N+1 analysis and hotspot-lint cross-reference (F3)."""
 
 import pytest
-
 from rabbitinspect import _core
 from rabbitinspect.perf import (
     FunctionStat,

@@ -31,8 +31,23 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   do not survive `fork()`. New `_core.perf_now_ms` / `perf_record_span` /
   `perf_reset` primitives back this.
 
-Notes: timings are statistical (sampling), not exact per-call. Roadmap: SQL/N+1,
-off-CPU, hotspot↔lint cross-reference, and attach-to-PID.
+### Added — database + hotspot intelligence (F3)
+
+- **Query recording** (`rabbitinspect.perf_db`): `record_query`, `query_timer`
+  context manager, and `instrument_sqlalchemy(engine)` / `instrument_django()`
+  helpers. Backed by the `_core.perf_record_query` primitive.
+- **N+1 detection**: queries are normalized (literals → `?`, `IN (?, ?, …)` →
+  `IN (?)`) and grouped per request; repeated shapes within one request are
+  flagged per endpoint with max-per-request count and total time. Report gains a
+  **Database** section (N+1 offenders + slowest queries).
+- **Hotspot ↔ lint cross-reference** (the toolkit's differentiator): the hottest
+  functions are run through rabbitinspect's own static analyzer, and findings
+  located inside a hot function are surfaced in a **"Hotspots with lint findings"**
+  report section — pointing the perf rules straight at the code that dominates
+  runtime.
+
+Notes: timings are statistical (sampling), not exact per-call. Roadmap: off-CPU
+(on-CPU vs waiting), and attach-to-PID for already-running servers.
 
 ## [1.1.0] - 2026-06-01
 

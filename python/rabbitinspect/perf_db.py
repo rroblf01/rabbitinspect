@@ -46,7 +46,7 @@ def query_timer(sql: str):
 
 def instrument_sqlalchemy(engine) -> None:
     """Attach cursor-execute listeners to a SQLAlchemy ``Engine``."""
-    from sqlalchemy import event
+    from sqlalchemy import event  # ty: ignore[unresolved-import]
 
     @event.listens_for(engine, 'before_cursor_execute')
     def _before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
@@ -70,8 +70,8 @@ def _django_execute_wrapper(execute, sql, params, many, context):  # noqa: ANN00
 
 def instrument_django() -> None:
     """Record queries on all current and future Django DB connections."""
-    from django.db import connections
-    from django.db.backends.signals import connection_created
+    from django.db import connections  # ty: ignore[unresolved-import]
+    from django.db.backends.signals import connection_created  # ty: ignore[unresolved-import]
 
     def _install(connection, **kwargs):  # noqa: ANN001
         if _django_execute_wrapper not in connection.execute_wrappers:
