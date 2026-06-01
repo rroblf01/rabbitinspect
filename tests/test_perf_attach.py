@@ -1,7 +1,8 @@
-"""Tests for the out-of-process attach foundation (F4 step 1). Linux-only."""
+"""Tests for the out-of-process attach foundation (F4 steps 1-2). Linux-only."""
 
 import ctypes
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -43,12 +44,33 @@ def test_invalid_pid_raises():
         _core.attach_maps(2_000_000_000)
 
 
+def test_interpreter_version_self():
+    details = _core.attach_interpreter_info(os.getpid())
+    expected = platform.python_version_tuple()  # ('3', '14', '4')
+    got = details['version'].split('.')
+    assert got[0] == expected[0]
+    assert got[1] == expected[1]
+    # version_hex high bytes encode major.minor
+    assert (details['version_hex'] >> 24) & 0xFF == int(expected[0])
+    assert (details['version_hex'] >> 16) & 0xFF == int(expected[1])
+    assert details['py_runtime_addr'] > 0
+
+
 def test_attach_to_child_process():
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])
     try:
         time.sleep(0.3)
         info = _core.attach_python_info(child.pid)
         assert info['is_python'] is True
+
+        # Cross-process symbol resolution: read the child's CPython version.
+        try:
+            details = _core.attach_interpreter_info(child.pid)
+        except OSError:
+            details = None
+        if details is not None:
+            assert details['version'].startswith(platform.python_version_tuple()[0] + '.')
+            assert details['py_runtime_addr'] > 0
 
         # Cross-process read: the interpreter image starts with the ELF magic.
         # Skip the assertion if ptrace_scope blocks cross-process reads.

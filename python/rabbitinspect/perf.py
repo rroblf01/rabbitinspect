@@ -788,9 +788,15 @@ def _attach_cli(pid: int) -> int:
     print(f'  interpreter: {info["interpreter_path"]}', file=sys.stderr)
     print(f'  image base:  0x{info["base"]:x}', file=sys.stderr)
     print(f'  mappings:    {info["maps_count"]}', file=sys.stderr)
+    try:
+        details = _core.attach_interpreter_info(pid)
+        print(f'  python:      {details["version"]} (0x{details["version_hex"]:08x})', file=sys.stderr)
+        print(f'  _PyRuntime:  0x{details["py_runtime_addr"]:x}', file=sys.stderr)
+    except OSError as e:
+        print(f'  python:      version unresolved ({e})', file=sys.stderr)
     print(
         '  note: remote stack sampling is not implemented yet '
-        '(symbol resolution + frame walking land in the next F4 step).',
+        '(frame walking lands in the next F4 step).',
         file=sys.stderr,
     )
     return 0
