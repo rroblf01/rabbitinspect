@@ -20,6 +20,14 @@ use std::time::{Duration, Instant};
 /// buffer without bound during the F1 spike.
 const MAX_SAMPLES: usize = 2_000_000;
 
+struct Span {
+    method: String,
+    route: String,
+    status: i64,
+    start_ms: f64,
+    end_ms: f64,
+}
+
 struct Samples {
     start: Instant,
     frame_table: Vec<String>,           // interned "func\tfile\tline" entries
@@ -28,6 +36,7 @@ struct Samples {
     sample_ts: Vec<f64>,                // ms since start, parallel to `stacks`
     sample_tid: Vec<u64>,               // thread id, parallel to `stacks`
     rss: Vec<(f64, i64)>,               // (ms, bytes)
+    spans: Vec<Span>,                   // request spans recorded by web middleware
     truncated: bool,
 }
 
@@ -41,6 +50,7 @@ impl Samples {
             sample_ts: Vec::new(),
             sample_tid: Vec::new(),
             rss: Vec::new(),
+            spans: Vec::new(),
             truncated: false,
         }
     }
@@ -206,6 +216,16 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
     for (t, b) in &s.rss {
         rss.append(PyList::new(py, [*t as f64, *b as f64])?)?;
     }
+    let spans = PyList::empty(py);
+    for sp in &s.spans {
+        let d = PyDict::new(py);
+        d.set_item("method", &sp.method)?;
+        d.set_item("route", &sp.route)?;
+        d.set_item("status", sp.status)?;
+        d.set_item("start_ms", sp.start_ms)?;
+        d.set_item("end_ms", sp.end_ms)?;
+        spans.append(d)?;
+    }
 
     let out = PyDict::new(py);
     out.set_item("frames", frames)?;
@@ -213,6 +233,7 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
     out.set_item("ts", ts)?;
     out.set_item("tids", tids)?;
     out.set_item("rss", rss)?;
+    out.set_item("spans", spans)?;
     out.set_item("duration_ms", duration_ms)?;
     out.set_item("sample_count", s.stacks.len())?;
     out.set_item("truncated", s.truncated)?;
@@ -223,4 +244,33 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
 #[pyfunction]
 pub fn perf_running() -> bool {
     slot().lock().unwrap().is_some()
+}
+
+/// Milliseconds elapsed since the current run started, or `-1.0` if not running.
+/// Web middleware uses this so request spans share the sampler's clock.
+#[pyfunction]
+pub fn perf_now_ms() -> f64 {
+    let g = slot().lock().unwrap();
+    match g.as_ref() {
+        Some(s) => s.shared.lock().unwrap().start.elapsed().as_secs_f64() * 1000.0,
+        None => -1.0,
+    }
+}
+
+/// Record an HTTP request span. No-op when the profiler is not running.
+#[pyfunction]
+pub fn perf_record_span(method: String, route: String, status: i64, start_ms: f64, end_ms: f64) {
+    let g = slot().lock().unwrap();
+    if let Some(s) = g.as_ref() {
+        let mut sh = s.shared.lock().unwrap();
+        if sh.spans.len() < MAX_SAMPLES {
+            sh.spans.push(Span {
+                method,
+                route,
+                status,
+                start_ms,
+                end_ms,
+            });
+        }
+    }
 }
