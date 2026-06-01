@@ -3316,6 +3316,23 @@ impl Checker for DeadExceptChecker {
 
 // ── RAB073: old-style % string formatting ────────────────────────────
 
+/// Check if a percent-format string uses only `%s` and `%%` placeholders.
+/// Such strings are typically SQL templates or gettext patterns where
+/// converting to f-strings would be incorrect.
+fn is_sql_or_gettext_template(fmt: &str) -> bool {
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('%') => continue,     // escaped % — gettext pattern
+                Some('s') => continue,     // %s placeholder — SQL/gettext
+                _ => return false,         // other specifier (d, r, f, etc.)
+            }
+        }
+    }
+    true
+}
+
 pub struct PercentFormatChecker;
 
 impl Checker for PercentFormatChecker {
@@ -3323,7 +3340,9 @@ impl Checker for PercentFormatChecker {
         let Expr::BinOp(b) = expr else { return };
         if !matches!(b.op, Operator::Mod) { return; }
         let Expr::Constant(cc) = &*b.left else { return };
-        if !matches!(&cc.value, Constant::Str(_)) { return; }
+        let Constant::Str(s) = &cc.value else { return };
+        // Skip SQL/gettext templates that only use %s wildcards
+        if is_sql_or_gettext_template(s.as_str()) { return; }
         let range = b.range();
         let start = text_size_to_usize(range.start());
         let end = text_size_to_usize(range.end());
@@ -3967,16 +3986,28 @@ fn is_enum_base(expr: &Expr) -> bool {
     }
 }
 
+/// Check if a class name is a Django-style inner config class (Meta, Options, Config, etc.)
+fn is_config_inner_class(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(lower.as_str(), "meta" | "options")
+}
+
 pub struct AttrTypeChecker {
     in_class: Vec<bool>,
     next_is_class: bool,
     is_enum: Vec<bool>,
     next_is_enum: bool,
+    class_name: Vec<String>,
+    next_class_name: String,
 }
 
 impl AttrTypeChecker {
     pub fn new() -> Self {
-        Self { in_class: Vec::new(), next_is_class: false, is_enum: Vec::new(), next_is_enum: false }
+        Self {
+            in_class: Vec::new(), next_is_class: false,
+            is_enum: Vec::new(), next_is_enum: false,
+            class_name: Vec::new(), next_class_name: String::new(),
+        }
     }
 }
 
@@ -3984,6 +4015,7 @@ impl Checker for AttrTypeChecker {
     fn enter_scope(&mut self) {
         self.in_class.push(self.next_is_class);
         self.is_enum.push(self.next_is_enum);
+        self.class_name.push(std::mem::take(&mut self.next_class_name));
         self.next_is_class = false;
         self.next_is_enum = false;
     }
@@ -3991,6 +4023,7 @@ impl Checker for AttrTypeChecker {
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {
         self.in_class.pop();
         self.is_enum.pop();
+        self.class_name.pop();
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
@@ -3998,11 +4031,17 @@ impl Checker for AttrTypeChecker {
             self.next_is_class = true;
             self.next_is_enum = cd.bases.iter().any(|b| is_enum_base(b))
                 || cd.keywords.iter().any(|kw| kw.arg.as_deref() == Some("metaclass") && is_enum_base(&kw.value));
+            self.next_class_name = cd.name.to_string();
             return;
         }
         // Only flag if the immediate scope is a class body (not a method inside a class)
         if !self.in_class.last().copied().unwrap_or(false) { return; }
         if *self.is_enum.last().unwrap_or(&false) { return; }
+        // Skip inner config classes (Django Meta/Options/Config pattern)
+        if let Some(name) = self.class_name.last() {
+            if name.is_empty() { /* root scope */ }
+            else if is_config_inner_class(name) { return; }
+        }
 
         // Check simple assignments (not already annotated)
         if let Stmt::Assign(a) = stmt {
@@ -4341,6 +4380,11 @@ impl Checker for ClassNameChecker {
 
 // ── RAB110: Function name should be snake_case ─────────────────────────
 
+const UNITTEST_CONVENTIONS: &[&str] = &[
+    "setUp", "tearDown", "setUpTestData", "setUpClass", "tearDownClass",
+    "setUpTestCaseData",
+];
+
 pub struct FunctionNameChecker;
 
 impl Checker for FunctionNameChecker {
@@ -4354,6 +4398,11 @@ impl Checker for FunctionNameChecker {
         if name.starts_with("__") && name.ends_with("__") { return; }
         // Skip private methods starting with _
         if name.starts_with('_') && name.len() > 1 && name.as_bytes()[1] != b'_' { return; }
+        // Skip unittest convention methods (setUp, tearDown, etc.)
+        if UNITTEST_CONVENTIONS.contains(&name) { return; }
+        // Skip assert* methods (test assertion helpers like assertEqual, assertRaises)
+        if name.starts_with("assert") && name.len() > 6
+            && name.as_bytes().get(6).map_or(false, |&b| b.is_ascii_uppercase()) { return; }
         let has_upper = name.chars().any(|c| c.is_uppercase());
         let has_underscore = name.contains('_');
         if !has_upper || has_underscore { return; }
@@ -4943,6 +4992,9 @@ impl Checker for AsyncBlockingChecker {
 
 // ── RAB126: Magic numbers ───────────────────────────────────────────────
 
+const COMMON_PORTS: &[i64] = &[22, 80, 443, 3306, 5432, 6379, 8080, 8443, 9090, 3000];
+const COMMON_TIME: &[i64] = &[3600, 86400, 604800, 2592000, 31536000, 2678400, 31622400];
+
 pub struct MagicNumberChecker {
     depth: u32,
 }
@@ -4950,10 +5002,18 @@ pub struct MagicNumberChecker {
 impl MagicNumberChecker {
     pub fn new() -> Self { Self { depth: 0 } }
     fn is_allowed(n: &str) -> bool {
-        matches!(n, "0" | "1" | "-1" | "0.0" | "1.0" | "-1.0" | "0.5"
+        if matches!(n, "0" | "1" | "-1" | "0.0" | "1.0" | "-1.0" | "0.5"
             | "60" | "24" | "365" | "100" | "1000" | "1024"
             | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-            | "10" | "100.0" | "60.0")
+            | "10" | "100.0" | "60.0") { return true; }
+        if let Ok(val) = n.parse::<i64>() {
+            // Years, HTTP status codes (100-599), common 3-digit ranges
+            if (1000..=2099).contains(&val) { return true; }
+            if (100..=599).contains(&val) { return true; }
+            if COMMON_PORTS.contains(&val) { return true; }
+            if COMMON_TIME.contains(&val) { return true; }
+        }
+        false
     }
 }
 
