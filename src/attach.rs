@@ -120,6 +120,186 @@ pub fn python_info(pid: i32) -> std::io::Result<PythonInfo> {
     })
 }
 
+// ── ELF symbol resolution + interpreter version (Linux) ──────────────────────
+//
+// `_PyRuntime` and `Py_Version` are exported globals, so they live in `.dynsym`
+// (present even in stripped binaries). We parse ELF64 by hand to avoid a heavy
+// dependency, then apply the module's load bias to turn a link-time vaddr into a
+// runtime address in the target.
+
+#[cfg(target_os = "linux")]
+mod elf {
+    fn u16(b: &[u8], o: usize) -> Option<u16> {
+        Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?))
+    }
+    fn u32(b: &[u8], o: usize) -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
+    }
+    fn u64(b: &[u8], o: usize) -> Option<u64> {
+        Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?))
+    }
+
+    fn is_elf64_le(d: &[u8]) -> bool {
+        d.len() > 6 && &d[0..4] == b"\x7fELF" && d[4] == 2 && d[5] == 1
+    }
+
+    fn read_cstr(d: &[u8], off: usize) -> Option<&str> {
+        let s = d.get(off..)?;
+        let end = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+        std::str::from_utf8(&s[..end]).ok()
+    }
+
+    /// Link-time virtual address of an exported symbol, searching `.symtab` and
+    /// `.dynsym`.
+    pub fn symbol_vaddr(d: &[u8], name: &str) -> Option<u64> {
+        if !is_elf64_le(d) {
+            return None;
+        }
+        let e_shoff = u64(d, 0x28)? as usize;
+        let e_shentsize = u16(d, 0x3a)? as usize;
+        let e_shnum = u16(d, 0x3c)? as usize;
+        for i in 0..e_shnum {
+            let sh = e_shoff + i * e_shentsize;
+            let sh_type = u32(d, sh + 4)?;
+            if sh_type != 2 && sh_type != 11 {
+                // not SYMTAB / DYNSYM
+                continue;
+            }
+            let sym_off = u64(d, sh + 24)? as usize;
+            let sym_size = u64(d, sh + 32)? as usize;
+            let link = u32(d, sh + 40)? as usize; // associated string table section
+            let entsize = u64(d, sh + 56)? as usize;
+            if entsize == 0 {
+                continue;
+            }
+            let str_sh = e_shoff + link * e_shentsize;
+            let str_off = u64(d, str_sh + 24)? as usize;
+            let count = sym_size / entsize;
+            for s in 0..count {
+                let so = sym_off + s * entsize;
+                let st_name = u32(d, so)? as usize;
+                let st_value = u64(d, so + 8)?;
+                if st_value == 0 {
+                    continue;
+                }
+                if read_cstr(d, str_off + st_name) == Some(name) {
+                    return Some(st_value);
+                }
+            }
+        }
+        None
+    }
+
+    /// Minimum `p_vaddr` over PT_LOAD segments — the file's link base.
+    pub fn min_load_vaddr(d: &[u8]) -> Option<u64> {
+        if !is_elf64_le(d) {
+            return None;
+        }
+        let e_phoff = u64(d, 0x20)? as usize;
+        let e_phentsize = u16(d, 0x36)? as usize;
+        let e_phnum = u16(d, 0x38)? as usize;
+        let mut min: Option<u64> = None;
+        for i in 0..e_phnum {
+            let ph = e_phoff + i * e_phentsize;
+            if u32(d, ph)? == 1 {
+                // PT_LOAD
+                let p_vaddr = u64(d, ph + 16)?;
+                min = Some(min.map_or(p_vaddr, |m| m.min(p_vaddr)));
+            }
+        }
+        min
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct InterpreterDetails {
+    pub module: String,
+    pub version_hex: u32,
+    pub version: String,
+    pub py_runtime_addr: usize,
+}
+
+/// The runtime load base for `module_path` in the target: the start of its
+/// offset-0 mapping (where the file's first byte lands).
+#[cfg(target_os = "linux")]
+fn module_load_base(regions: &[MapRegion], module_path: &str) -> Option<usize> {
+    let mut with_zero_offset = regions
+        .iter()
+        .filter(|r| r.path == module_path && r.offset == 0)
+        .map(|r| r.start);
+    if let Some(base) = with_zero_offset.clone().min() {
+        return Some(base);
+    }
+    let _ = with_zero_offset.next();
+    regions
+        .iter()
+        .filter(|r| r.path == module_path)
+        .map(|r| r.start)
+        .min()
+}
+
+/// Resolve the target's CPython version and `_PyRuntime` address by parsing
+/// whichever mapped module exports the interpreter symbols.
+#[cfg(target_os = "linux")]
+pub fn interpreter_details(pid: i32) -> std::io::Result<InterpreterDetails> {
+    let regions = parse_maps(pid)?;
+    let mut candidates: Vec<String> = Vec::new();
+    for r in &regions {
+        if is_python_mapping(&r.path) && !candidates.contains(&r.path) && std::path::Path::new(&r.path).exists() {
+            candidates.push(r.path.clone());
+        }
+    }
+
+    for module in candidates {
+        let Ok(data) = std::fs::read(&module) else {
+            continue;
+        };
+        let (Some(rt_vaddr), Some(ver_vaddr)) =
+            (elf::symbol_vaddr(&data, "_PyRuntime"), elf::symbol_vaddr(&data, "Py_Version"))
+        else {
+            continue;
+        };
+        let base_vaddr = elf::min_load_vaddr(&data).unwrap_or(0);
+        let Some(load_base) = module_load_base(&regions, &module) else {
+            continue;
+        };
+        let bias = load_base as i128 - base_vaddr as i128;
+        let ver_runtime = (bias + ver_vaddr as i128) as usize;
+        let rt_runtime = (bias + rt_vaddr as i128) as usize;
+
+        let bytes = read_mem(pid, ver_runtime, 4)?;
+        if bytes.len() < 4 {
+            continue;
+        }
+        let version_hex = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let major = (version_hex >> 24) & 0xff;
+        let minor = (version_hex >> 16) & 0xff;
+        let micro = (version_hex >> 8) & 0xff;
+        // Sanity-check: Python 3.x.
+        if major != 3 {
+            continue;
+        }
+        return Ok(InterpreterDetails {
+            module,
+            version_hex,
+            version: format!("{major}.{minor}.{micro}"),
+            py_runtime_addr: rt_runtime,
+        });
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "could not resolve interpreter symbols (_PyRuntime / Py_Version)",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn interpreter_details(_pid: i32) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "interpreter introspection is only implemented on Linux",
+    ))
+}
+
 // ── Python bindings ──────────────────────────────────────────────────────────
 
 #[pyfunction]
@@ -144,6 +324,27 @@ pub fn attach_maps(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
         list.append(d)?;
     }
     Ok(list.into_any().unbind())
+}
+
+#[cfg(target_os = "linux")]
+#[pyfunction]
+pub fn attach_interpreter_info(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
+    let d = interpreter_details(pid)
+        .map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("interpreter_details failed: {e}")))?;
+    let dict = PyDict::new(py);
+    dict.set_item("module", d.module)?;
+    dict.set_item("version", d.version)?;
+    dict.set_item("version_hex", d.version_hex)?;
+    dict.set_item("py_runtime_addr", d.py_runtime_addr)?;
+    Ok(dict.into_any().unbind())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[pyfunction]
+pub fn attach_interpreter_info(_py: Python<'_>, _pid: i32) -> PyResult<Py<PyAny>> {
+    Err(pyo3::exceptions::PyOSError::new_err(
+        "interpreter introspection is only implemented on Linux",
+    ))
 }
 
 #[pyfunction]

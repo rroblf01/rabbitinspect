@@ -78,5 +78,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(attach::attach_read_mem, m)?)?;
     m.add_function(wrap_pyfunction!(attach::attach_maps, m)?)?;
     m.add_function(wrap_pyfunction!(attach::attach_python_info, m)?)?;
+    m.add_function(wrap_pyfunction!(attach::attach_interpreter_info, m)?)?;
     Ok(())
 }
