@@ -120,10 +120,15 @@ def test_remote_sample_recovers_stack(tmp_path):
         except OSError:
             pytest.skip('remote sampling blocked (ptrace_scope / unsupported version)')
         assert len(stacks) >= 1
+        # find the target's stack (the one running target.py)
+        target_stack = next((s for s in stacks if any('target.py' in e for e in s)), stacks[0])
         # leaf-first; the sleeping thread's stack is leaf <- middle <- outer <- <module>
-        funcs = [entry.split('\t')[0] for entry in stacks[0]]
+        funcs = [entry.split('\t')[0] for entry in target_stack]
         assert funcs[:4] == ['leaf', 'middle', 'outer', '<module>']
-        assert all(entry.split('\t')[1].endswith('target.py') for entry in stacks[0])
+        assert all(entry.split('\t')[1].endswith('target.py') for entry in target_stack)
+        # line numbers decoded from co_linetable (PEP 626) match the source layout
+        lines = [int(entry.split('\t')[2]) for entry in target_stack]
+        assert lines[:4] == [3, 5, 7, 8]
     finally:
         child.terminate()
         child.wait(timeout=5)

@@ -318,8 +318,12 @@ struct DebugOffsets {
     tstate_current_frame: usize,
     frame_previous: usize,
     frame_executable: usize,
+    frame_instr_ptr: usize,
     code_filename: usize,
     code_name: usize,
+    code_linetable: usize,
+    code_firstlineno: usize,
+    code_code_adaptive: usize,
 }
 
 #[cfg(target_os = "linux")]
@@ -349,8 +353,12 @@ fn read_debug_offsets(pid: i32, runtime_addr: usize) -> std::io::Result<DebugOff
         tstate_current_frame: g(208),
         frame_previous: g(256),
         frame_executable: g(264),
+        frame_instr_ptr: g(272),
         code_filename: g(320),
         code_name: g(328),
+        code_linetable: g(344),
+        code_firstlineno: g(352),
+        code_code_adaptive: g(384),
     })
 }
 
@@ -378,8 +386,119 @@ fn read_pystr(pid: i32, obj: usize) -> Option<String> {
     }
 }
 
+// ── PEP 626 line table decoding ──────────────────────────────────────────────
+//
+// `co_linetable` is a sequence of variable-length entries (one per run of
+// instructions). We walk entries, accumulating the line delta, until the entry
+// whose instruction range covers `lasti` (the current instruction index). The
+// format is the location-table format from CPython's `Objects/locations.md`.
+
+#[cfg(target_os = "linux")]
+fn scan_varint(d: &[u8], i: &mut usize) -> u64 {
+    let mut b = *d.get(*i).unwrap_or(&0);
+    *i += 1;
+    let mut val = (b & 0x3f) as u64;
+    let mut shift = 6;
+    while b & 0x40 != 0 {
+        b = *d.get(*i).unwrap_or(&0);
+        *i += 1;
+        val |= ((b & 0x3f) as u64) << shift;
+        shift += 6;
+    }
+    val
+}
+
+#[cfg(target_os = "linux")]
+fn scan_svarint(d: &[u8], i: &mut usize) -> i64 {
+    let val = scan_varint(d, i);
+    if val & 1 != 0 {
+        -((val >> 1) as i64)
+    } else {
+        (val >> 1) as i64
+    }
+}
+
+/// Map a current-instruction index (`lasti`, in code units) to a source line,
+/// using `co_firstlineno` as the base. Returns 0 if the offset is uncovered.
+#[cfg(target_os = "linux")]
+fn linetable_to_line(linetable: &[u8], firstlineno: i64, lasti: i64) -> i64 {
+    let mut line = firstlineno;
+    let mut i = 0usize;
+    let mut addr: i64 = 0;
+    while i < linetable.len() {
+        let first = linetable[i];
+        i += 1;
+        if first & 0x80 == 0 {
+            // Not an entry start byte — bail to avoid desync.
+            break;
+        }
+        let code = (first >> 3) & 0x0f;
+        let length = (first & 7) as i64 + 1;
+        let ldelta = match code {
+            15 => 0,            // NONE
+            14 => {             // LONG: signed line delta + 3 varints (end line, cols)
+                let d = scan_svarint(linetable, &mut i);
+                scan_varint(linetable, &mut i);
+                scan_varint(linetable, &mut i);
+                scan_varint(linetable, &mut i);
+                d
+            }
+            13 => scan_svarint(linetable, &mut i), // NO_COLUMNS
+            10..=12 => {        // ONE_LINE0/1/2: delta = code-10, + 2 column bytes
+                i += 2;
+                (code as i64) - 10
+            }
+            _ => {              // 0..=9 SHORT: delta 0, + 1 packed column byte
+                i += 1;
+                0
+            }
+        };
+        line += ldelta;
+        if addr <= lasti && lasti < addr + length {
+            return if code == 15 { 0 } else { line };
+        }
+        addr += length;
+    }
+    line
+}
+
+/// Read a frame's current source line by decoding its code object's line table.
+#[cfg(target_os = "linux")]
+fn frame_line(pid: i32, frame: usize, code: usize, off: &DebugOffsets) -> i64 {
+    // co_firstlineno is a 32-bit int field inside the code object.
+    let fl = match read_mem(pid, code + off.code_firstlineno, 4) {
+        Ok(b) if b.len() >= 4 => i32::from_le_bytes(b[..4].try_into().unwrap()) as i64,
+        _ => return 0,
+    };
+    // instr_ptr points into the inline co_code_adaptive array; lasti is the
+    // instruction index (code units, 2 bytes each) from that array's start.
+    let instr_ptr = read_ptr(pid, frame + off.frame_instr_ptr).unwrap_or(0);
+    let code_start = code + off.code_code_adaptive;
+    if instr_ptr < code_start {
+        return fl;
+    }
+    let lasti = ((instr_ptr - code_start) / 2) as i64;
+    // co_linetable is a PyBytes object: ob_size at +16, inline data at +32.
+    let lt_obj = read_ptr(pid, code + off.code_linetable).unwrap_or(0);
+    if lt_obj == 0 {
+        return fl;
+    }
+    let size = match read_mem(pid, lt_obj + 16, 8) {
+        Ok(b) if b.len() >= 8 => i64::from_le_bytes(b[..8].try_into().unwrap()),
+        _ => return fl,
+    };
+    if size <= 0 || size > 1_000_000 {
+        return fl;
+    }
+    let linetable = match read_mem(pid, lt_obj + 32, size as usize) {
+        Ok(b) => b,
+        _ => return fl,
+    };
+    linetable_to_line(&linetable, fl, lasti)
+}
+
 /// One snapshot of every Python thread's stack in the target. Each stack is a
-/// vec of "func\tfile\t0" entries, leaf-first (line numbers are a refinement).
+/// vec of "func\tfile\tline" entries, leaf-first.
 #[cfg(target_os = "linux")]
 pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<Vec<String>>> {
     let details = interpreter_details(pid)?;
@@ -404,7 +523,8 @@ pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<Vec<String>>> {
                     let file = read_pystr(pid, read_ptr(pid, code + off.code_filename)?);
                     let func = read_pystr(pid, read_ptr(pid, code + off.code_name)?);
                     if let (Some(file), Some(func)) = (file, func) {
-                        stack.push(format!("{func}\t{file}\t0"));
+                        let line = frame_line(pid, frame, code, &off);
+                        stack.push(format!("{func}\t{file}\t{line}"));
                     }
                 }
                 frame = read_ptr(pid, frame + off.frame_previous)?;
