@@ -120,15 +120,18 @@ def test_remote_sample_recovers_stack(tmp_path):
         except OSError:
             pytest.skip('remote sampling blocked (ptrace_scope / unsupported version)')
         assert len(stacks) >= 1
-        # find the target's stack (the one running target.py)
-        target_stack = next((s for s in stacks if any('target.py' in e for e in s)), stacks[0])
+        # each thread is {'state': <char>, 'frames': [...]}
+        target = next((t for t in stacks if any('target.py' in e for e in t['frames'])), stacks[0])
+        frames = target['frames']
         # leaf-first; the sleeping thread's stack is leaf <- middle <- outer <- <module>
-        funcs = [entry.split('\t')[0] for entry in target_stack]
+        funcs = [entry.split('\t')[0] for entry in frames]
         assert funcs[:4] == ['leaf', 'middle', 'outer', '<module>']
-        assert all(entry.split('\t')[1].endswith('target.py') for entry in target_stack)
+        assert all(entry.split('\t')[1].endswith('target.py') for entry in frames)
         # line numbers decoded from co_linetable (PEP 626) match the source layout
-        lines = [int(entry.split('\t')[2]) for entry in target_stack]
+        lines = [int(entry.split('\t')[2]) for entry in frames]
         assert lines[:4] == [3, 5, 7, 8]
+        # the target is blocked in time.sleep → off-CPU (not 'R')
+        assert target['state'] in {'S', 'D'}
     finally:
         child.terminate()
         child.wait(timeout=5)
@@ -146,6 +149,10 @@ def test_sample_remote_aggregates(tmp_path):
         assert {'leaf', 'middle', 'outer'} <= names
         # the sleeping leaf frame dominates self time
         assert result.functions[0].name == 'leaf'
+        # the whole run is the target sleeping → classified off-CPU
+        assert result.off_cpu_ms > result.on_cpu_ms
+        leaf = next(f for f in result.functions if f.name == 'leaf')
+        assert leaf.off_cpu_ms > 0.0
     finally:
         child.terminate()
         child.wait(timeout=5)

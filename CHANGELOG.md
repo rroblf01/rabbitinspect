@@ -78,14 +78,20 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   recovering function/file/**line** per frame. Line numbers are decoded from each
   code object's `co_linetable` (PEP 626 location-table format) out-of-process.
   `attach_sample` + `perf.sample_remote`.
+- **Off-CPU classification** (remote attach): each sampled thread is tagged with
+  its OS scheduling state (`/proc/<pid>/task/<tid>/stat`), so the report splits
+  self time into on-CPU vs waiting (sleep / blocking I/O / lock). Surfaces as an
+  "On-CPU %" card, a per-function "Wait ms" column, and `ProfileResult.on_cpu_ms`
+  / `off_cpu_ms` / `FunctionStat.off_cpu_ms`. `attach_sample` now returns
+  `{'state', 'frames'}` per thread.
 - **CLI**: `rabbitinspect perf attach --pid <PID> --duration <S> --out report.html`
   samples an already-running server with **no code changes** and writes the same
   HTML report (top functions, memory n/a, hotspot↔lint cross-reference). Verified
   end-to-end on CPython 3.14 by recovering a known call stack.
 
 Notes: timings are statistical (sampling), not exact per-call. Remote attach is
-Linux-only and currently supports CPython 3.12+ (validated on 3.14); off-CPU
-classification and per-function memory remain on the roadmap.
+Linux-only and currently supports CPython 3.12+ (validated on 3.14); per-function
+memory and older-CPython attach validation remain on the roadmap.
 
 ## [1.1.0] - 2026-06-01
 

@@ -316,6 +316,7 @@ struct DebugOffsets {
     threads_head: usize,
     tstate_next: usize,
     tstate_current_frame: usize,
+    tstate_native_thread_id: usize,
     frame_previous: usize,
     frame_executable: usize,
     frame_instr_ptr: usize,
@@ -351,6 +352,7 @@ fn read_debug_offsets(pid: i32, runtime_addr: usize) -> std::io::Result<DebugOff
         threads_head: g(72),
         tstate_next: g(192),
         tstate_current_frame: g(208),
+        tstate_native_thread_id: g(224),
         frame_previous: g(256),
         frame_executable: g(264),
         frame_instr_ptr: g(272),
@@ -497,10 +499,32 @@ fn frame_line(pid: i32, frame: usize, code: usize, off: &DebugOffsets) -> i64 {
     linetable_to_line(&linetable, fl, lasti)
 }
 
-/// One snapshot of every Python thread's stack in the target. Each stack is a
+/// Read a thread's OS scheduling state from `/proc/<pid>/task/<tid>/stat`.
+/// Returns the single-char state ('R' running/runnable, 'S'/'D' sleeping, …).
+/// Used to classify samples as on-CPU vs off-CPU (waiting). Defaults to 'R' when
+/// the stat file can't be read (treat as on-CPU rather than hide the work).
+#[cfg(target_os = "linux")]
+fn read_thread_state(pid: i32, tid: usize) -> char {
+    let path = format!("/proc/{}/task/{}/stat", pid, tid);
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return 'R';
+    };
+    // Format: "tid (comm) state ...". comm may contain spaces/parens, so the
+    // state is the first non-space char after the final ')'.
+    let Some(close) = data.rfind(')') else {
+        return 'R';
+    };
+    data[close + 1..]
+        .trim_start()
+        .chars()
+        .next()
+        .unwrap_or('R')
+}
+
+/// One snapshot of every Python thread in the target: its OS state char plus a
 /// vec of "func\tfile\tline" entries, leaf-first.
 #[cfg(target_os = "linux")]
-pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<Vec<String>>> {
+pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, Vec<String>)>> {
     let details = interpreter_details(pid)?;
     let off = read_debug_offsets(pid, details.py_runtime_addr)?;
 
@@ -530,7 +554,13 @@ pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<Vec<String>>> {
                 frame = read_ptr(pid, frame + off.frame_previous)?;
             }
             if !stack.is_empty() {
-                stacks.push(stack);
+                let native_tid = read_ptr(pid, tstate + off.tstate_native_thread_id)?;
+                let state = if native_tid != 0 {
+                    read_thread_state(pid, native_tid)
+                } else {
+                    'R'
+                };
+                stacks.push((state, stack));
             }
             tstate = read_ptr(pid, tstate + off.tstate_next)?;
         }
@@ -571,8 +601,11 @@ pub fn attach_sample(py: Python<'_>, pid: i32) -> PyResult<Py<PyAny>> {
     let stacks = sample_stacks(pid)
         .map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("sample failed: {e}")))?;
     let outer = PyList::empty(py);
-    for stack in &stacks {
-        outer.append(PyList::new(py, stack)?)?;
+    for (state, stack) in &stacks {
+        let d = PyDict::new(py);
+        d.set_item("state", state.to_string())?;
+        d.set_item("frames", PyList::new(py, stack)?)?;
+        outer.append(d)?;
     }
     Ok(outer.into_any().unbind())
 }

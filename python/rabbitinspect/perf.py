@@ -35,6 +35,7 @@ class FunctionStat:
     total_ms: float
     self_pct: float
     total_pct: float
+    off_cpu_ms: float = 0.0  # share of self time the thread was waiting (not on-CPU)
 
 
 @dataclass
@@ -101,6 +102,8 @@ class ProfileResult:
     queries: list[Query] = field(default_factory=list)
     n_plus_one: list[NPlusOne] = field(default_factory=list)
     hotspot_lints: list[HotspotLint] = field(default_factory=list)
+    on_cpu_ms: float = 0.0  # wall time sampled with at least one thread on-CPU
+    off_cpu_ms: float = 0.0  # wall time sampled fully waiting (sleep / I/O / lock)
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -140,15 +143,27 @@ def aggregate(raw: dict) -> ProfileResult:
     parsed = [_parse_frame(f) for f in frames]
 
     self_counts: Counter[tuple[str, str]] = Counter()
+    off_self_counts: Counter[tuple[str, str]] = Counter()
     total_counts: Counter[tuple[str, str]] = Counter()
     folded_counts: Counter[str] = Counter()
 
-    for stack in stacks:
+    # Per-sample OS thread state (remote attach only). 'R' == on-CPU; anything
+    # else (S/D/…) == off-CPU (sleeping, blocked I/O, lock wait). Absent for the
+    # in-process sampler, where all sampled threads are blocked on the GIL anyway.
+    states: list[str] = raw.get('states', [])
+    off_total = 0
+
+    for i, stack in enumerate(stacks):
         if not stack:
             continue
+        off_cpu = bool(states) and i < len(states) and states[i] != 'R'
+        if off_cpu:
+            off_total += 1
         # Leaf-first from the sampler; leaf == currently executing function.
         leaf_func, leaf_file, _ = parsed[stack[0]]
         self_counts[(leaf_func, leaf_file)] += 1
+        if off_cpu:
+            off_self_counts[(leaf_func, leaf_file)] += 1
 
         seen: set[tuple[str, str]] = set()
         names_root_first: list[str] = []
@@ -177,6 +192,7 @@ def aggregate(raw: dict) -> ProfileResult:
                 total_ms=tc / denom * duration_ms,
                 self_pct=sc / denom * 100.0,
                 total_pct=tc / denom * 100.0,
+                off_cpu_ms=off_self_counts.get(key, 0) / denom * duration_ms,
             )
         )
     functions.sort(key=lambda f: f.self_ms, reverse=True)
@@ -207,6 +223,9 @@ def aggregate(raw: dict) -> ProfileResult:
     ]
     n_plus_one = _detect_n_plus_one(spans, queries)
 
+    off_cpu_ms = off_total / denom * duration_ms if states else 0.0
+    on_cpu_ms = duration_ms - off_cpu_ms if states else 0.0
+
     return ProfileResult(
         duration_ms=duration_ms,
         sample_count=sample_count,
@@ -218,6 +237,8 @@ def aggregate(raw: dict) -> ProfileResult:
         endpoints=endpoints,
         queries=queries,
         n_plus_one=n_plus_one,
+        on_cpu_ms=on_cpu_ms,
+        off_cpu_ms=off_cpu_ms,
         raw=raw,
     )
 
@@ -460,6 +481,7 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
             f'<td class="file">{html.escape(f.file)}</td>'
             f'<td class="num">{f.self_ms:.1f}</td>'
             f'<td class="num">{f.total_ms:.1f}</td>'
+            f'<td class="num">{f.off_cpu_ms:.1f}</td>'
             f'<td class="bar"><span style="width:{bar:.1f}%"></span>'
             f'<em>{f.self_pct:.1f}%</em></td>'
             '</tr>'
@@ -694,6 +716,14 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
 def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
     """Render a self-contained HTML report."""
     peak_mb = result.peak_rss_bytes / (1024 * 1024)
+    cpu_card = ''
+    if result.on_cpu_ms or result.off_cpu_ms:
+        total = result.on_cpu_ms + result.off_cpu_ms or 1.0
+        on_pct = result.on_cpu_ms / total * 100.0
+        cpu_card = (
+            f'<div class="card"><div class="v">{on_pct:.0f}%</div>'
+            f'<div class="k">On-CPU</div></div>'
+        )
     folded_text = '\n'.join(f'{stack} {count}' for stack, count in result.folded)
     payload = json.dumps(
         {
@@ -758,6 +788,7 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
     <div class="card"><div class="v">{result.sample_count}</div><div class="k">Samples</div></div>
     <div class="card"><div class="v">{len(result.functions)}</div><div class="k">Functions</div></div>
     <div class="card"><div class="v">{peak_mb:.1f} MB</div><div class="k">Peak RSS</div></div>
+    {cpu_card}
   </div>
 
   <h2>Memory over time</h2>
@@ -769,7 +800,7 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   {_flamegraph_svg(result)}
   <h2>Top functions by self time</h2>
   <table>
-    <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th>Self %</th></tr></thead>
+    <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th class="num">Wait ms</th><th>Self %</th></tr></thead>
     <tbody>
     {_func_rows(result.functions)}
     </tbody>
@@ -875,6 +906,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
     frame_index: dict[str, int] = {}
     stacks: list[list[int]] = []
     sample_ts: list[float] = []
+    states: list[str] = []
 
     def intern(entry: str) -> int:
         idx = frame_index.get(entry)
@@ -891,9 +923,10 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
         except OSError:
             break  # target exited or became unreadable
         now = (time.perf_counter() - start) * 1000.0
-        for stack in snapshot:
-            stacks.append([intern(e) for e in stack])
+        for thread in snapshot:
+            stacks.append([intern(e) for e in thread['frames']])
             sample_ts.append(now)
+            states.append(thread.get('state', 'R'))
         time.sleep(interval_ms / 1000.0)
 
     raw = {
@@ -901,6 +934,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
         'stacks': stacks,
         'ts': sample_ts,
         'tids': [],
+        'states': states,
         'rss': [],
         'spans': [],
         'queries': [],

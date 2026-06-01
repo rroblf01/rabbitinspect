@@ -160,6 +160,36 @@ def test_aggregate_self_vs_total():
     assert result.peak_rss_bytes == 2000.0
 
 
+def test_aggregate_off_cpu_split():
+    # 4 samples: leaf 'work' on-CPU twice, leaf 'wait' off-CPU (sleeping) twice.
+    raw = {
+        'frames': ['work\tx.py\t1', 'wait\tx.py\t2'],
+        'stacks': [[0], [0], [1], [1]],
+        'ts': [1.0, 2.0, 3.0, 4.0],
+        'tids': [1, 1, 1, 1],
+        'states': ['R', 'R', 'S', 'D'],
+        'rss': [],
+        'duration_ms': 100.0,
+        'sample_count': 4,
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    # half the wall time was spent waiting.
+    assert result.off_cpu_ms == pytest.approx(50.0)
+    assert result.on_cpu_ms == pytest.approx(50.0)
+    by_name = {f.name: f for f in result.functions}
+    # 'work' is pure on-CPU; 'wait' is fully off-CPU.
+    assert by_name['work'].off_cpu_ms == pytest.approx(0.0)
+    assert by_name['wait'].off_cpu_ms == pytest.approx(50.0)
+
+
+def test_aggregate_no_states_means_on_cpu():
+    # Without a 'states' array (in-process sampler) nothing is marked off-CPU.
+    result = aggregate(_empty_raw())
+    assert result.off_cpu_ms == 0.0
+    assert result.on_cpu_ms == 0.0
+
+
 # ── HTML report ──────────────────────────────────────────────────────────────
 
 
