@@ -46,8 +46,16 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   report section — pointing the perf rules straight at the code that dominates
   runtime.
 
+### Added — export, demo & docs
+
+- **Speedscope export**: `rabbitinspect perf run … --speedscope profile.json`
+  writes a [speedscope](https://speedscope.app) file for an interactive
+  flamegraph / time-order view (`perf.to_speedscope`).
+- **Demo** `examples/perf_demo.py` and a README "Runtime profiler" section.
+
 Notes: timings are statistical (sampling), not exact per-call. Roadmap: off-CPU
-(on-CPU vs waiting), and attach-to-PID for already-running servers.
+(on-CPU vs waiting), per-function memory, and attach-to-PID for already-running
+servers.
 
 ## [1.1.0] - 2026-06-01
 

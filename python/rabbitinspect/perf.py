@@ -698,6 +698,56 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
 """
 
 
+# ── speedscope export ─────────────────────────────────────────────────────
+
+
+def to_speedscope(result: ProfileResult, name: str = 'rabbitinspect') -> dict:
+    """Export the profile as a speedscope file (https://speedscope.app).
+
+    Lets users open an interactive flamegraph / time-order view in a mature,
+    battle-tested viewer instead of relying only on the built-in HTML.
+    """
+    frames_raw: list[str] = result.raw.get('frames', [])
+    stacks: list[list[int]] = result.raw.get('stacks', [])
+
+    shared_frames = []
+    for entry in frames_raw:
+        func, _, rest = entry.partition('\t')
+        file, _, line = rest.partition('\t')
+        frame: dict = {'name': func}
+        if file:
+            frame['file'] = file
+        try:
+            frame['line'] = int(line)
+        except ValueError:
+            pass
+        shared_frames.append(frame)
+
+    n = len(stacks)
+    weight = (result.duration_ms / n) if n else 0.0
+    # speedscope wants each sample as root-first frame indices; our stacks are leaf-first.
+    samples = [list(reversed(stack)) for stack in stacks]
+    weights = [weight] * n
+
+    return {
+        '$schema': 'https://www.speedscope.app/file-format-schema.json',
+        'name': name,
+        'exporter': 'rabbitinspect',
+        'shared': {'frames': shared_frames},
+        'profiles': [
+            {
+                'type': 'sampled',
+                'name': name,
+                'unit': 'milliseconds',
+                'startValue': 0,
+                'endValue': result.duration_ms,
+                'samples': samples,
+                'weights': weights,
+            }
+        ],
+    }
+
+
 # ── Launcher ────────────────────────────────────────────────────────────────
 
 
@@ -735,6 +785,7 @@ def run_perf_cli(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest='cmd', required=True)
     runp = sub.add_parser('run', help='Run a Python script under the profiler')
     runp.add_argument('--out', default='rabbitinspect-perf.html', help='HTML report output path')
+    runp.add_argument('--speedscope', metavar='PATH', help='Also write a speedscope JSON profile')
     runp.add_argument('--interval', type=float, default=5.0, help='Sampling interval in ms')
     runp.add_argument('--max-depth', type=int, default=256, help='Maximum stack depth to walk')
     runp.add_argument('script', help='Python script to profile')
@@ -750,6 +801,12 @@ def run_perf_cli(argv: list[str]) -> int:
         )
         with open(args.out, 'w', encoding='utf-8') as f:
             f.write(result.to_html())
+        if args.speedscope:
+            import json as _json
+
+            with open(args.speedscope, 'w', encoding='utf-8') as f:
+                _json.dump(to_speedscope(result), f)
+            print(f'Speedscope profile written to {args.speedscope}', file=sys.stderr)
         peak_mb = result.peak_rss_bytes / (1024 * 1024)
         print(
             f'Profiled {args.script}: {result.duration_ms:.0f} ms, '

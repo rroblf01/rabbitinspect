@@ -311,6 +311,57 @@ rabbitinspect src/ --ignore-category style,complexity
 
 ---
 
+## Runtime profiler (2.0 preview)
+
+Beyond static analysis, rabbitinspect ships a **sampling runtime profiler** written in Rust. A background thread snapshots the Python stack via `sys._current_frames()` (robust across CPython 3.10–3.14) and samples resident memory, with near-zero changes to your code. On stop it writes a **self-contained HTML report**.
+
+```bash
+# Profile a script and write an HTML report
+rabbitinspect perf run myscript.py --out report.html
+
+# Also export an interactive flamegraph for https://speedscope.app
+rabbitinspect perf run myscript.py --speedscope profile.speedscope.json
+```
+
+The report includes:
+
+- **Top functions** by self/total time, and a **memory-over-time** chart.
+- **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).
+- **Database** section: slowest queries and **N+1 detection** (repeated query shapes within one request).
+- **Hotspots with lint findings**: the hottest functions cross-referenced against rabbitinspect's own static rules — the static perf rules pointed straight at the code that dominates runtime.
+
+### Web frameworks
+
+Drop-in middleware records one span per request (method, route, status, duration). Both are no-ops when the profiler is off, so they are safe to leave installed.
+
+```python
+# Django (wsgi.py)
+from rabbitinspect.perf_web import WSGIProfilerMiddleware
+application = WSGIProfilerMiddleware(application)
+
+# FastAPI / Starlette
+from rabbitinspect.perf_web import ASGIProfilerMiddleware
+app.add_middleware(ASGIProfilerMiddleware)
+```
+
+For forked workers (gunicorn/uvicorn), call `enable_fork_profiling()` in the parent so each worker gets its own live sampler (OS threads don't survive `fork()`).
+
+### Database queries
+
+```python
+from rabbitinspect.perf_db import instrument_sqlalchemy, instrument_django, query_timer
+
+instrument_sqlalchemy(engine)   # SQLAlchemy
+instrument_django()             # Django (call once at startup)
+
+with query_timer('SELECT ...'):  # generic
+    cursor.execute('SELECT ...')
+```
+
+> Timings are **statistical** (sampling), not exact per-call. Per-function memory and attach-to-an-already-running-process are on the roadmap.
+
+---
+
 ## Performance rationale
 
 ### Why Rust?
