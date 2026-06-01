@@ -48,10 +48,16 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 
 ### Added — export, demo & docs
 
-- **Inline flamegraph**: the HTML report now embeds a self-contained icicle
-  flamegraph (SVG, no JS) built from the folded stacks — frame width is the
-  share of samples, hover shows sample count / % / ms. Works for both in-process
-  and remote-attach profiles.
+- **Interactive flamegraph**: the HTML report embeds a self-contained icicle
+  flamegraph (inline SVG) built from the folded stacks — frame width is the share
+  of samples, hover shows sample count / % / ms, **click a frame to zoom into its
+  sub-tree** (click the background to reset). The zoom logic is a tiny embedded
+  script with no external dependencies. Works for both in-process and
+  remote-attach profiles.
+- **Per-function memory** (`Profiler(trace_memory=True)` / `perf run --memory`):
+  records live allocations via `tracemalloc` at stop and attributes each to its
+  function (AST line ranges), shown as a "Top allocations by size" table.
+  `ProfileResult.mem_allocations` / `MemAlloc`.
 - **Speedscope export**: `rabbitinspect perf run … --speedscope profile.json`
   writes a [speedscope](https://speedscope.app) file for an interactive
   flamegraph / time-order view (`perf.to_speedscope`).

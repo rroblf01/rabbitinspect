@@ -241,7 +241,7 @@ def test_flamegraph_widths_proportional():
     import re
 
     widths = {}
-    for g in re.findall(r'<g>.*?</g>', svg):
+    for g in re.findall(r'<g [^>]*>.*?</g>', svg):
         name = re.search(r'<title>([^ ]+)', g)
         w = re.search(r'width="([\d.]+)"', g)
         if name and w:
@@ -249,6 +249,23 @@ def test_flamegraph_widths_proportional():
     # main spans full width; compute is 40% of it.
     assert widths['main'] > 980
     assert 380 < widths['compute'] < 420
+
+
+def test_flamegraph_interactive_zoom_data():
+    from rabbitinspect.perf import _flamegraph_svg
+
+    r = ProfileResult(
+        100.0, 100, False, [],
+        [('main', 60), ('main;compute', 40)], [],
+    )
+    svg = _flamegraph_svg(r, width=1000)
+    # each frame carries normalized [f0,f1] fractions for the zoom script
+    assert 'data-f0=' in svg and 'data-f1=' in svg
+    # the zoom script + click handlers are embedded (self-contained, no deps)
+    assert '<script>' in svg
+    assert 'addEventListener("click"' in svg
+    # full-width root frame spans the whole [0,1] range
+    assert 'data-f0="0.000000" data-f1="1.000000"' in svg
 
 
 def test_flamegraph_empty():

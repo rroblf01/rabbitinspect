@@ -117,6 +117,58 @@ def test_end_to_end_profile_and_report(tmp_path):
     assert ss['shared']['frames']
 
 
+_MEM_DEMO = """
+def make_big():
+    data = []
+    for _ in range(50):
+        data.append(bytearray(10000))
+    return data
+
+# keep the allocations alive at module scope so they're still live at snapshot
+BLOBS = make_big()
+
+def main():
+    total = 0
+    for _ in range(200000):
+        total += 1
+    return total
+
+main()
+"""
+
+
+def test_profile_with_memory(tmp_path):
+    from rabbitinspect.perf import Profiler
+
+    script = tmp_path / 'memdemo.py'
+    script.write_text(_MEM_DEMO)
+
+    import runpy
+
+    with Profiler(interval_ms=1.0, trace_memory=True) as prof:
+        runpy.run_path(str(script), run_name='__main__')
+    result = prof.result
+
+    assert result.mem_allocations, 'tracemalloc produced no allocations'
+    # the bytearray allocations should attribute to make_big (or its source line)
+    funcs = {a.function for a in result.mem_allocations}
+    assert 'make_big' in funcs
+    big = next(a for a in result.mem_allocations if a.function == 'make_big')
+    assert big.size_bytes > 100_000  # 50 × 10 KB
+
+    html = result.to_html()
+    assert 'Top allocations by size' in html
+    assert 'make_big' in html
+
+
+def test_no_memory_section_without_tracing(tmp_path):
+    script = tmp_path / 'demo.py'
+    script.write_text(_DEMO)
+    result = profile_script(str(script), interval_ms=1.0)
+    assert result.mem_allocations == []
+    assert 'Top allocations by size' not in result.to_html()
+
+
 def test_profile_json_roundtrip_and_diff(tmp_path):
     from rabbitinspect.perf import diff_profiles, load_profile_json, save_profile_json
 

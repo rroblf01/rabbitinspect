@@ -334,7 +334,8 @@ rabbitinspect perf diff before.json after.json --out diff.html
 
 The report includes:
 
-- **Top functions** by self/total time, an **inline flamegraph**, and a **memory-over-time** chart.
+- **Top functions** by self/total time, an **interactive flamegraph** (click to zoom), and a **memory-over-time** chart.
+- **Per-function memory** (`perf run --memory`): live allocations attributed to functions via `tracemalloc`.
 - **On-CPU vs off-CPU** split (attach mode): how much self time was real CPU work vs waiting on sleep / I/O / locks.
 - **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).
 - **Database** section: slowest queries and **N+1 detection** (repeated query shapes within one request).

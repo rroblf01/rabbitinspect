@@ -39,6 +39,17 @@ class FunctionStat:
 
 
 @dataclass
+class MemAlloc:
+    """Live allocation attributed to a function (from tracemalloc)."""
+
+    function: str
+    file: str
+    line: int
+    size_bytes: int
+    count: int
+
+
+@dataclass
 class Span:
     method: str
     route: str
@@ -119,6 +130,7 @@ class ProfileResult:
     hotspot_lints: list[HotspotLint] = field(default_factory=list)
     on_cpu_ms: float = 0.0  # wall time sampled with at least one thread on-CPU
     off_cpu_ms: float = 0.0  # wall time sampled fully waiting (sleep / I/O / lock)
+    mem_allocations: list['MemAlloc'] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -367,26 +379,83 @@ def _aggregate_endpoints(spans: list[Span]) -> list[EndpointStat]:
     return stats
 
 
+def _func_for_line(file: str, line: int, cache: dict[str, dict[str, list[tuple[int, int]]]]) -> str:
+    """Resolve which function a (file, line) lives in, via cached AST ranges."""
+    ranges = cache.get(file)
+    if ranges is None:
+        try:
+            with open(file, encoding='utf-8') as f:
+                ranges = _function_ranges(f.read())
+        except OSError:
+            ranges = {}
+        cache[file] = ranges
+    best: tuple[int, str] | None = None  # (span, name); prefer the tightest match
+    for name, spans in ranges.items():
+        for start, end in spans:
+            if start <= line <= end:
+                span = end - start
+                if best is None or span < best[0]:
+                    best = (span, name)
+    return best[1] if best else '<module>'
+
+
+def _collect_tracemalloc(snapshot, top_n: int = 50) -> list[MemAlloc]:
+    """Group a tracemalloc snapshot by source line and attribute it to functions."""
+    cache: dict[str, dict[str, list[tuple[int, int]]]] = {}
+    allocs: list[MemAlloc] = []
+    for stat in snapshot.statistics('lineno'):
+        frame = stat.traceback[0]
+        file = frame.filename
+        line = frame.lineno
+        allocs.append(
+            MemAlloc(
+                function=_func_for_line(file, line, cache),
+                file=file,
+                line=line,
+                size_bytes=stat.size,
+                count=stat.count,
+            )
+        )
+    allocs.sort(key=lambda a: a.size_bytes, reverse=True)
+    return allocs[:top_n]
+
+
 class Profiler:
     """Context manager that samples the running interpreter.
 
     >>> with Profiler() as prof:
     ...     do_work()
     >>> prof.result.to_html()
+
+    Set ``trace_memory=True`` to additionally record per-function allocations
+    via :mod:`tracemalloc` (adds overhead; off by default).
     """
 
-    def __init__(self, interval_ms: float = 5.0, max_depth: int = 256):
+    def __init__(self, interval_ms: float = 5.0, max_depth: int = 256, trace_memory: bool = False):
         self.interval_ms = interval_ms
         self.max_depth = max_depth
+        self.trace_memory = trace_memory
         self.result: ProfileResult | None = None
 
     def __enter__(self) -> 'Profiler':
+        if self.trace_memory:
+            import tracemalloc
+
+            tracemalloc.start()
         _core.perf_start(self.interval_ms, self.max_depth)
         return self
 
     def __exit__(self, *exc) -> None:
         raw = _core.perf_stop()
+        mem: list[MemAlloc] = []
+        if self.trace_memory:
+            import tracemalloc
+
+            snapshot = tracemalloc.take_snapshot()
+            tracemalloc.stop()
+            mem = _collect_tracemalloc(snapshot)
         self.result = aggregate(raw)
+        self.result.mem_allocations = mem
 
 
 # ── hotspot ↔ lint cross-reference ───────────────────────────────────────────
@@ -502,6 +571,31 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
             '</tr>'
         )
     return '\n'.join(rows)
+
+
+def _mem_section(allocs: list[MemAlloc], limit: int = 25) -> str:
+    if not allocs:
+        return ''
+    rows = []
+    for a in allocs[:limit]:
+        kb = a.size_bytes / 1024.0
+        rows.append(
+            '<tr>'
+            f'<td class="name">{html.escape(a.function)}</td>'
+            f'<td class="file">{html.escape(a.file)}:{a.line}</td>'
+            f'<td class="num">{kb:.1f}</td>'
+            f'<td class="num">{a.count}</td>'
+            '</tr>'
+        )
+    return f"""
+  <h2>Top allocations by size <span class="muted">(tracemalloc; live at stop)</span></h2>
+  <table>
+    <thead><tr><th>Function</th><th>Site</th><th class="num">KB</th><th class="num">Blocks</th></tr></thead>
+    <tbody>
+    {chr(10).join(rows)}
+    </tbody>
+  </table>
+"""
 
 
 def _status_color(status: int) -> str:
@@ -691,18 +785,24 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
     rects: list[str] = []
     max_depth = 0
 
-    def emit(children: dict[str, _Node], x: float, depth: int) -> None:
+    def emit(children: dict[str, _Node], offset: int, depth: int) -> None:
+        """offset is the cumulative sample index where this group starts."""
         nonlocal max_depth
         max_depth = max(max_depth, depth)
+        x0 = offset
         # Stable left-to-right order: heaviest first, then by name.
         for name, child in sorted(children.items(), key=lambda kv: (-kv[1].count, kv[0])):
             count = child.count
+            x = pad + x0 * scale
             w = count * scale
             y = depth * row_h
             ms = count / total * result.duration_ms
             pct = count / total * 100
             label = name.split('\t')[0]
             title = html.escape(f'{label} — {count} samples ({pct:.1f}%, {ms:.0f} ms)')
+            # fractions of the full width — used by the zoom script to rescale.
+            f0 = x0 / total
+            f1 = (x0 + count) / total
             text = ''
             if w > 28:
                 shown = label if len(label) * 6.5 < w else label[: max(1, int(w / 6.5))] + '…'
@@ -711,20 +811,38 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
                     f'font-size="11" fill="#1a1a1a" pointer-events="none">{html.escape(shown)}</text>'
                 )
             rects.append(
-                f'<g><title>{title}</title>'
+                f'<g data-f0="{f0:.6f}" data-f1="{f1:.6f}" data-y="{y}">'
+                f'<title>{title}</title>'
                 f'<rect x="{x:.1f}" y="{y}" width="{max(w - 1, 0.5):.1f}" height="{row_h - 1}" '
                 f'rx="1.5" fill="{_flame_color(label)}" stroke="#fff" stroke-width="0.5"/>'
                 f'{text}</g>'
             )
-            emit(child.children, x, depth + 1)
-            x += w
+            emit(child.children, x0, depth + 1)
+            x0 += count
 
-    emit(root_children, pad, 0)
+    emit(root_children, 0, 0)
     height = (max_depth + 1) * row_h + pad
+    # Click a frame to zoom into its sub-tree; click the background to reset.
+    script = (
+        '<script>(function(){'
+        'var s=document.currentScript.parentNode,W=' + str(width) + ';'
+        'var gs=[].slice.call(s.querySelectorAll("g[data-f0]"));'
+        'function zoom(a,b){var sp=b-a;if(sp<=0)return;gs.forEach(function(g){'
+        'var f0=+g.dataset.f0,f1=+g.dataset.f1,n0=(f0-a)/sp,n1=(f1-a)/sp;'
+        'if(n1<=0.0001||n0>=0.9999){g.style.display="none";return;}g.style.display="";'
+        'var r=g.querySelector("rect"),t=g.querySelector("text");'
+        'var x=Math.max(0,n0)*W,w=(Math.min(1,n1)-Math.max(0,n0))*W;'
+        'r.setAttribute("x",x.toFixed(1));r.setAttribute("width",Math.max(w-1,0.5).toFixed(1));'
+        'if(t){t.setAttribute("x",(x+3).toFixed(1));t.style.display=w>28?"":"none";}});}'
+        'gs.forEach(function(g){g.style.cursor="pointer";g.addEventListener("click",function(e){'
+        'e.stopPropagation();zoom(+g.dataset.f0,+g.dataset.f1);});});'
+        's.addEventListener("click",function(){zoom(0,1);});'
+        '})();</script>'
+    )
     return (
         f'<svg viewBox="0 0 {width} {height}" class="chart flame" role="img" '
         f'aria-label="Flamegraph" preserveAspectRatio="xMidYMin meet">'
-        f'{"".join(rects)}</svg>'
+        f'{"".join(rects)}{script}</svg>'
     )
 
 
@@ -808,10 +926,11 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
 
   <h2>Memory over time</h2>
   {_rss_svg(result.rss)}
+  {_mem_section(result.mem_allocations)}
   {_requests_section(result)}
   {_database_section(result)}
   {_hotspot_lints_section(result)}
-  <h2>Flamegraph <span class="muted">(width = share of samples; hover for detail)</span></h2>
+  <h2>Flamegraph <span class="muted">(width = share of samples; click to zoom, click background to reset)</span></h2>
   {_flamegraph_svg(result)}
   <h2>Top functions by self time</h2>
   <table>
@@ -1023,11 +1142,12 @@ def profile_script(
     argv: list[str] | None = None,
     interval_ms: float = 5.0,
     max_depth: int = 256,
+    trace_memory: bool = False,
 ) -> ProfileResult:
     """Run ``path`` as ``__main__`` under the profiler and return the result."""
     saved_argv = sys.argv
     sys.argv = [path, *(argv or [])]
-    prof = Profiler(interval_ms=interval_ms, max_depth=max_depth)
+    prof = Profiler(interval_ms=interval_ms, max_depth=max_depth, trace_memory=trace_memory)
     try:
         with prof:
             try:
@@ -1163,6 +1283,7 @@ def run_perf_cli(argv: list[str]) -> int:
     runp.add_argument('--json', metavar='PATH', dest='json_out', help='Also write a profile JSON for `perf diff`')
     runp.add_argument('--interval', type=float, default=5.0, help='Sampling interval in ms')
     runp.add_argument('--max-depth', type=int, default=256, help='Maximum stack depth to walk')
+    runp.add_argument('--memory', action='store_true', help='Also record per-function allocations (tracemalloc)')
     runp.add_argument('script', help='Python script to profile')
     runp.add_argument('script_args', nargs=argparse.REMAINDER, help='Arguments passed to the script')
 
@@ -1198,6 +1319,7 @@ def run_perf_cli(argv: list[str]) -> int:
             args.script_args,
             interval_ms=args.interval,
             max_depth=args.max_depth,
+            trace_memory=args.memory,
         )
         with open(args.out, 'w', encoding='utf-8') as f:
             f.write(result.to_html())
