@@ -66,6 +66,11 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   records live allocations via `tracemalloc` at stop and attributes each to its
   function (AST line ranges), shown as a "Top allocations by size" table.
   `ProfileResult.mem_allocations` / `MemAlloc`.
+- **Per-line breakdown inside a function**: click any function row in the report
+  to expand a line-by-line self-time table (line number, ms, bar, and the actual
+  source text), built by attributing each leaf sample to its source line. For a
+  view that does `time.sleep(5)`, the sleep line shows ~5000 ms; for CPU code it
+  pinpoints the hot statement. `FunctionStat.line_times`.
 - **Source line per function**: function tables now show `file:line`, where the
   line is the source line most often sampled for that function — for a hot leaf
   that points straight at the slow statement (e.g. the `time.sleep` line).

@@ -37,6 +37,8 @@ class FunctionStat:
     total_pct: float
     off_cpu_ms: float = 0.0  # share of self time the thread was waiting (not on-CPU)
     line: int = 0  # the source line most often sampled for this function (0 = unknown)
+    # per-line self time inside this function: (line, self_ms, samples), hottest first
+    line_times: list = field(default_factory=list)
 
 
 @dataclass
@@ -208,6 +210,7 @@ def aggregate(raw: dict) -> ProfileResult:
     total_counts: Counter[tuple[str, str]] = Counter()
     folded_counts: Counter[str] = Counter()
     line_counts: dict[tuple[str, str], Counter[int]] = {}
+    leaf_line_counts: dict[tuple[str, str], Counter[int]] = {}
 
     # Per-sample OS thread state (remote attach only). 'R' == on-CPU; anything
     # else (S/D/…) == off-CPU (sleeping, blocked I/O, lock wait). Absent for the
@@ -222,10 +225,13 @@ def aggregate(raw: dict) -> ProfileResult:
         if off_cpu:
             off_total += 1
         # Leaf-first from the sampler; leaf == currently executing function.
-        leaf_func, leaf_file, _ = parsed[stack[0]]
-        self_counts[(leaf_func, leaf_file)] += 1
+        leaf_func, leaf_file, leaf_line = parsed[stack[0]]
+        leaf_key = (leaf_func, leaf_file)
+        self_counts[leaf_key] += 1
+        if leaf_line:
+            leaf_line_counts.setdefault(leaf_key, Counter())[leaf_line] += 1
         if off_cpu:
-            off_self_counts[(leaf_func, leaf_file)] += 1
+            off_self_counts[leaf_key] += 1
 
         seen: set[tuple[str, str]] = set()
         names_root_first: list[str] = []
@@ -263,6 +269,12 @@ def aggregate(raw: dict) -> ProfileResult:
         total_ms = tc * weight
         lc = line_counts.get(key)
         rep_line = lc.most_common(1)[0][0] if lc else 0
+        llc = leaf_line_counts.get(key)
+        line_times = (
+            sorted(((ln, cnt * weight, cnt) for ln, cnt in llc.items()), key=lambda t: -t[1])
+            if llc
+            else []
+        )
         functions.append(
             FunctionStat(
                 name=func,
@@ -273,6 +285,7 @@ def aggregate(raw: dict) -> ProfileResult:
                 total_pct=(total_ms / duration_ms * 100.0) if duration_ms else 0.0,
                 off_cpu_ms=off_self_counts.get(key, 0) * weight,
                 line=rep_line,
+                line_times=line_times,
             )
         )
     functions.sort(key=lambda f: f.self_ms, reverse=True)
@@ -608,13 +621,57 @@ def _rss_svg(rss: list[tuple[float, float]], width: int = 900, height: int = 220
     )
 
 
-def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
+def _source_lines(file: str, cache: dict[str, list[str] | None]) -> list[str] | None:
+    """Read & cache a source file's lines (for per-line breakdowns). None if unreadable."""
+    if file in cache:
+        return cache[file]
+    lines: list[str] | None
+    try:
+        with open(file, encoding='utf-8', errors='replace') as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = None
+    cache[file] = lines
+    return lines
+
+
+def _line_detail(f: FunctionStat, cache: dict[str, list[str] | None]) -> str:
+    """A per-line self-time breakdown inside one function (with source text)."""
+    if not f.line_times:
+        return ''
+    src = _source_lines(f.file, cache)
+    total = f.self_ms or 1.0
     rows = []
-    for f in functions[:limit]:
-        bar = min(100.0, f.self_pct)
+    for ln, ms, _cnt in f.line_times:
+        pct = min(100.0, ms / total * 100.0)
+        code = ''
+        if src and 1 <= ln <= len(src):
+            code = html.escape(src[ln - 1].rstrip()[:200])
         rows.append(
             '<tr>'
-            f'<td class="name">{html.escape(f.name)}</td>'
+            f'<td class="num">{ln}</td>'
+            f'<td class="num">{ms:.1f}</td>'
+            f'<td class="linebar"><span style="width:{pct:.1f}%"></span></td>'
+            f'<td><code>{code}</code></td>'
+            '</tr>'
+        )
+    return (
+        '<table class="lines"><thead><tr>'
+        '<th class="num">Line</th><th class="num">Self ms</th><th></th><th>Code</th>'
+        f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
+    rows = []
+    src_cache: dict[str, list[str] | None] = {}
+    for f in functions[:limit]:
+        bar = min(100.0, f.self_pct)
+        has_detail = bool(f.line_times)
+        marker = '▸ ' if has_detail else ''
+        rows.append(
+            f'<tr class="{"fn" if has_detail else ""}">'
+            f'<td class="name">{marker}{html.escape(f.name)}</td>'
             f'<td class="file">{html.escape(f.file)}{f":{f.line}" if f.line else ""}</td>'
             f'<td class="num">{f.self_ms:.1f}</td>'
             f'<td class="num">{f.total_ms:.1f}</td>'
@@ -623,6 +680,10 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
             f'<em>{f.self_pct:.1f}%</em></td>'
             '</tr>'
         )
+        if has_detail:
+            rows.append(
+                f'<tr class="fndetail" style="display:none"><td colspan="6">{_line_detail(f, src_cache)}</td></tr>'
+            )
     return '\n'.join(rows)
 
 
@@ -1170,6 +1231,15 @@ def render_html(
   td.bar {{ position: relative; width: 160px; }}
   td.bar span {{ display: inline-block; height: 12px; background: #3b82f6; border-radius: 2px; vertical-align: middle; }}
   td.bar em {{ font-style: normal; font-size: 11px; color: #6b7280; margin-left: 6px; }}
+  tr.fn {{ cursor: pointer; }}
+  tr.fn:hover {{ background: #f3f4f6; }}
+  tr.fn td.name {{ font-weight: 500; }}
+  tr.fndetail > td {{ background: #f9fafb; padding: 4px 8px 10px 24px; }}
+  table.lines {{ width: auto; min-width: 60%; background: transparent; }}
+  table.lines td, table.lines th {{ border-bottom: 1px solid #eee; padding: 2px 8px; }}
+  table.lines td.linebar {{ width: 120px; }}
+  table.lines td.linebar span {{ display: inline-block; height: 9px; background: #f08c00; border-radius: 2px; }}
+  table.lines code {{ white-space: pre; }}
   .chart {{ width: 100%; max-width: 900px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }}
   .flame {{ max-width: 1100px; }}
   .flame rect {{ cursor: default; }}
@@ -1223,6 +1293,7 @@ def render_html(
   </details>
 
   <script type="application/json" id="rabbitinspect-perf-data">{payload}</script>
+  <script>document.querySelectorAll("tr.fn").forEach(function(r){{r.addEventListener("click",function(){{var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail"))d.style.display=d.style.display==="none"?"table-row":"none";}});}});</script>
 </main>
 </body>
 </html>

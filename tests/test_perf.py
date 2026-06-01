@@ -201,6 +201,33 @@ def test_aggregate_reports_hot_line():
     assert 'urls.py:10' in render_html(result)
 
 
+def test_aggregate_line_times_breakdown():
+    # 'get' sampled at line 10 (×3) and line 8 (×1) as the leaf.
+    raw = {
+        'frames': ['get\turls.py\t10', 'get\turls.py\t8'],
+        'stacks': [[0], [0], [0], [1]],
+        'ts': [0.0, 1.0, 2.0, 3.0],
+        'tids': [1, 1, 1, 1],
+        'rss': [],
+        'duration_ms': 40.0,
+        'sample_count': 4,
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    get = next(f for f in result.functions if f.name == 'get')
+    # per-line self time, hottest first; weight = 40ms / 4 ticks = 10ms per sample
+    assert get.line_times[0] == (10, pytest.approx(30.0), 3)
+    assert get.line_times[1] == (8, pytest.approx(10.0), 1)
+
+    html = result.to_html()
+    # the row is expandable and the per-line detail table is embedded
+    assert 'class="fn"' in html
+    assert 'fndetail' in html
+    assert 'table class="lines"' in html or 'class="lines"' in html
+    # the toggle script is wired
+    assert 'tr.fn' in html
+
+
 def test_aggregate_off_cpu_split():
     # 4 samples: leaf 'work' on-CPU twice, leaf 'wait' off-CPU (sleeping) twice.
     raw = {

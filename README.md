@@ -339,6 +339,7 @@ The report includes:
 
 - **Top functions** by self/total time, an **interactive flamegraph** (click to zoom), and a **memory-over-time** chart.
 - **Flame chart (time order)** + **call timings**: each call shown separately along a time axis (a function called twice appears twice); hover for the call's duration. The table gives calls / total / avg / max ms per function.
+- **Per-line breakdown**: click a function in the report to expand its self-time line by line, with the source text — pinpoints which statement spent the time.
 - **Per-function memory** (`perf run --memory`): live allocations attributed to functions via `tracemalloc`.
 - **On-CPU vs off-CPU** split (attach mode): how much self time was real CPU work vs waiting on sleep / I/O / locks.
 - **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).
