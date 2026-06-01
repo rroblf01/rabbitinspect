@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 pub mod analyze;
+pub mod attach;
 pub mod checks;
 pub mod fix;
 pub mod perf;
@@ -74,5 +75,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(perf::perf_record_span, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_reset, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_record_query, m)?)?;
+    m.add_function(wrap_pyfunction!(attach::attach_read_mem, m)?)?;
+    m.add_function(wrap_pyfunction!(attach::attach_maps, m)?)?;
+    m.add_function(wrap_pyfunction!(attach::attach_python_info, m)?)?;
     Ok(())
 }
