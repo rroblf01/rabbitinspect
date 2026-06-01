@@ -73,6 +73,8 @@ def filter_findings(
     source: str,
     select: set[str] | None,
     ignore: set[str] | None,
+    only_categories: set[str] | None = None,
+    ignore_categories: set[str] | None = None,
 ) -> list[dict]:
     noqa_map = parse_noqa(source)
 
@@ -84,6 +86,12 @@ def filter_findings(
         if select is not None and code not in select:
             continue
         if ignore is not None and code in ignore:
+            continue
+
+        cat = RULES_CATEGORY.get(code)
+        if only_categories is not None and (cat is None or cat not in only_categories):
+            continue
+        if ignore_categories is not None and cat in ignore_categories:
             continue
 
         noqa_codes = noqa_map.get(line)
@@ -389,24 +397,160 @@ EXPLANATIONS: dict[str, str] = {
 
 ALL_CODES = sorted(EXPLANATIONS.keys())
 
+RULES_CATEGORY: dict[str, str] = {
+    "RAB001": "unused",
+    "RAB002": "correctness",
+    "RAB003": "correctness",
+    "RAB004": "performance",
+    "RAB005": "performance",
+    "RAB006": "correctness",
+    "RAB007": "correctness",
+    "RAB008": "performance",
+    "RAB009": "performance",
+    "RAB010": "performance",
+    "RAB011": "correctness",
+    "RAB012": "correctness",
+    "RAB013": "correctness",
+    "RAB014": "style",
+    "RAB015": "performance",
+    "RAB016": "style",
+    "RAB017": "complexity",
+    "RAB018": "complexity",
+    "RAB019": "performance",
+    "RAB020": "performance",
+    "RAB022": "typesafety",
+    "RAB023": "style",
+    "RAB024": "performance",
+    "RAB025": "correctness",
+    "RAB026": "style",
+    "RAB029": "correctness",
+    "RAB030": "correctness",
+    "RAB031": "correctness",
+    "RAB032": "style",
+    "RAB034": "correctness",
+    "RAB035": "correctness",
+    "RAB036": "performance",
+    "RAB037": "performance",
+    "RAB038": "performance",
+    "RAB039": "style",
+    "RAB040": "performance",
+    "RAB041": "performance",
+    "RAB042": "performance",
+    "RAB043": "performance",
+    "RAB044": "style",
+    "RAB045": "correctness",
+    "RAB046": "performance",
+    "RAB047": "performance",
+    "RAB048": "correctness",
+    "RAB049": "style",
+    "RAB050": "performance",
+    "RAB051": "performance",
+    "RAB052": "correctness",
+    "RAB054": "correctness",
+    "RAB055": "style",
+    "RAB056": "performance",
+    "RAB057": "correctness",
+    "RAB058": "style",
+    "RAB059": "correctness",
+    "RAB060": "performance",
+    "RAB061": "import",
+    "RAB062": "style",
+    "RAB063": "correctness",
+    "RAB064": "correctness",
+    "RAB065": "correctness",
+    "RAB066": "performance",
+    "RAB067": "style",
+    "RAB068": "correctness",
+    "RAB069": "style",
+    "RAB070": "correctness",
+    "RAB071": "performance",
+    "RAB072": "correctness",
+    "RAB073": "style",
+    "RAB074": "style",
+    "RAB075": "correctness",
+    "RAB076": "correctness",
+    "RAB078": "correctness",
+    "RAB079": "correctness",
+    "RAB080": "style",
+    "RAB083": "correctness",
+    "RAB085": "performance",
+    "RAB087": "performance",
+    "RAB088": "performance",
+    "RAB089": "performance",
+    "RAB090": "typesafety",
+    "RAB091": "typesafety",
+    "RAB092": "typesafety",
+    "RAB093": "typesafety",
+    "RAB094": "typesafety",
+    "RAB095": "typesafety",
+    "RAB096": "import",
+    "RAB098": "import",
+    "RAB099": "correctness",
+    "RAB100": "correctness",
+    "RAB101": "complexity",
+    "RAB102": "complexity",
+    "RAB103": "correctness",
+    "RAB104": "performance",
+    "RAB105": "correctness",
+    "RAB106": "correctness",
+    "RAB107": "style",
+    "RAB108": "correctness",
+    "RAB109": "style",
+    "RAB110": "style",
+    "RAB111": "style",
+    "RAB112": "style",
+    "RAB113": "correctness",
+    "RAB114": "correctness",
+    "RAB115": "correctness",
+    "RAB118": "correctness",
+    "RAB119": "correctness",
+    "RAB120": "correctness",
+    "RAB123": "correctness",
+    "RAB124": "correctness",
+    "RAB126": "style",
+    "RAB127": "correctness",
+    "RAB128": "correctness",
+    "RAB129": "correctness",
+}
+
+CATEGORIES = {
+    "correctness": "Potential bugs and correctness issues",
+    "style": "Code style and conventions",
+    "performance": "Performance improvements",
+    "typesafety": "Type annotation rules",
+    "complexity": "Code complexity metrics",
+    "import": "Import-related rules",
+    "unused": "Unused variables and imports",
+}
+
+CATEGORY_CODES: dict[str, list[str]] = {}
+for code in ALL_CODES:
+    cat = RULES_CATEGORY.get(code, "style")
+    CATEGORY_CODES.setdefault(cat, []).append(code)
+
 
 def print_code_list(color: bool) -> None:
-    for code in ALL_CODES:
-        desc = EXPLANATIONS[code].split(".")[0].strip()
-        has_fix = "✅" if code in (
-            "RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
-            "RAB015", "RAB026", "RAB029", "RAB030", "RAB031", "RAB032",
-            "RAB034", "RAB035", "RAB036", "RAB037", "RAB038", "RAB039",
-            "RAB040", "RAB042", "RAB044", "RAB046", "RAB047", "RAB048",
-            "RAB049", "RAB052", "RAB054", "RAB055", "RAB057", "RAB058",
-            "RAB060", "RAB062", "RAB063", "RAB064", "RAB067", "RAB069",
-            "RAB070", "RAB071", "RAB075", "RAB076", "RAB080", "RAB085",
-            "RAB087", "RAB088", "RAB089", "RAB112", "RAB128",
-        ) else "❌"
-        line = f"{code}  {desc:<65} {has_fix}"
+    for cat_name, cat_desc in sorted(CATEGORIES.items()):
         if color:
-            line = f"\x1b[36m{code}\x1b[0m  {desc:<65} {has_fix}"
-        print(line)
+            print(f"\n\x1b[1;33m{cat_name}\x1b[0m  \x1b[33m{cat_desc}\x1b[0m")
+        else:
+            print(f"\n{cat_name}  {cat_desc}")
+        for code in CATEGORY_CODES.get(cat_name, []):
+            desc = EXPLANATIONS[code].split(".")[0].strip()
+            has_fix = "✅" if code in (
+                "RAB002", "RAB003", "RAB004", "RAB005", "RAB006", "RAB007",
+                "RAB015", "RAB026", "RAB029", "RAB030", "RAB031", "RAB032",
+                "RAB034", "RAB035", "RAB036", "RAB037", "RAB038", "RAB039",
+                "RAB040", "RAB042", "RAB044", "RAB046", "RAB047", "RAB048",
+                "RAB049", "RAB052", "RAB054", "RAB055", "RAB057", "RAB058",
+                "RAB060", "RAB062", "RAB063", "RAB064", "RAB067", "RAB069",
+                "RAB070", "RAB071", "RAB075", "RAB076", "RAB080", "RAB085",
+                "RAB087", "RAB088", "RAB089", "RAB112", "RAB128",
+            ) else "❌"
+            line = f"  {code}  {desc:<65} {has_fix}"
+            if color:
+                line = f"  \x1b[36m{code}\x1b[0m  {desc:<65} {has_fix}"
+            print(line)
 
 
 def main() -> None:
@@ -440,6 +584,18 @@ def main() -> None:
         help="Comma-separated list of check codes to disable (e.g. 'RAB022,RAB101')",
     )
     parser.add_argument(
+        "--only-category",
+        type=str,
+        dest="only_category",
+        help="Comma-separated list of rule categories to enable (e.g. 'correctness,performance')",
+    )
+    parser.add_argument(
+        "--ignore-category",
+        type=str,
+        dest="ignore_category",
+        help="Comma-separated list of rule categories to disable (e.g. 'style,complexity')",
+    )
+    parser.add_argument(
         "--format",
         type=str,
         choices=["text", "json"],
@@ -468,7 +624,7 @@ def main() -> None:
         "--list",
         action="store_true",
         dest="show_list",
-        help="List all available check codes with descriptions",
+        help="List all available check codes grouped by category",
     )
     parser.add_argument(
         "--version",
@@ -487,7 +643,12 @@ def main() -> None:
     if cli_args.explain:
         code = cli_args.explain.strip().upper()
         if code in EXPLANATIONS:
-            print(f"\x1b[1m{code}\x1b[0m" if use_color else code)
+            cat = RULES_CATEGORY.get(code, "style")
+            cat_desc = CATEGORIES.get(cat, cat)
+            if use_color:
+                print(f"\x1b[1m{code}\x1b[0m  (\x1b[33m{cat}\x1b[0m: {cat_desc})")
+            else:
+                print(f"{code}  ({cat}: {cat_desc})")
             print("-" * len(code))
             print(EXPLANATIONS[code])
         else:
@@ -536,6 +697,8 @@ def main() -> None:
 
     select_codes: set[str] | None = None
     ignore_codes: set[str] | None = None
+    only_categories: set[str] | None = None
+    ignore_categories: set[str] | None = None
 
     if cli_args.select:
         select_codes = {c.strip().upper() for c in cli_args.select.split(",") if c.strip()}
@@ -546,6 +709,16 @@ def main() -> None:
         ignore_codes = {c.strip().upper() for c in cli_args.ignore.split(",") if c.strip()}
     elif "ignore" in config:
         ignore_codes = {c.strip().upper() for c in config["ignore"]}
+
+    if cli_args.only_category:
+        only_categories = {c.strip().lower() for c in cli_args.only_category.split(",") if c.strip()}
+    elif "only-categories" in config:
+        only_categories = {c.strip().lower() for c in config["only-categories"]}
+
+    if cli_args.ignore_category:
+        ignore_categories = {c.strip().lower() for c in cli_args.ignore_category.split(",") if c.strip()}
+    elif "ignore-categories" in config:
+        ignore_categories = {c.strip().lower() for c in config["ignore-categories"]}
 
     use_color = not cli_args.no_color and sys.stdout.isatty()
     all_results: list[dict] = []
@@ -562,7 +735,7 @@ def main() -> None:
             continue
 
         raw_findings = analyze_code(source)
-        findings = filter_findings(raw_findings, source, select_codes, ignore_codes)
+        findings = filter_findings(raw_findings, source, select_codes, ignore_codes, only_categories, ignore_categories)
 
         if not findings:
             continue

@@ -250,6 +250,7 @@ impl Checker for UnusedVarsChecker {
                 }
             }
             Stmt::ImportFrom(i) => {
+                if i.module.as_deref() == Some("__future__") { return; }
                 for alias in &i.names {
                     if alias.name.as_str() == "*" { continue; }
                     let name = alias
@@ -3949,32 +3950,59 @@ impl Checker for ParamTypeChecker {
 
 // ── RAB092: Missing class/instance attribute type annotation ─────────────
 
+fn is_enum_base(expr: &Expr) -> bool {
+    match expr {
+        Expr::Name(n) => matches!(n.id.as_str(), "Enum" | "IntEnum" | "StrEnum" | "Flag" | "IntFlag" | "ReprEnum"),
+        Expr::Attribute(a) => {
+            let mut cur = &*a.value;
+            loop {
+                match cur {
+                    Expr::Attribute(inner) => cur = &*inner.value,
+                    Expr::Name(n) => return n.id.as_str() == "enum",
+                    _ => return false,
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
 pub struct AttrTypeChecker {
     in_class: Vec<bool>,
     next_is_class: bool,
+    is_enum: Vec<bool>,
+    next_is_enum: bool,
 }
 
 impl AttrTypeChecker {
-    pub fn new() -> Self { Self { in_class: Vec::new(), next_is_class: false } }
+    pub fn new() -> Self {
+        Self { in_class: Vec::new(), next_is_class: false, is_enum: Vec::new(), next_is_enum: false }
+    }
 }
 
 impl Checker for AttrTypeChecker {
     fn enter_scope(&mut self) {
         self.in_class.push(self.next_is_class);
+        self.is_enum.push(self.next_is_enum);
         self.next_is_class = false;
+        self.next_is_enum = false;
     }
 
     fn exit_scope(&mut self, _findings: &mut Vec<Finding>) {
         self.in_class.pop();
+        self.is_enum.pop();
     }
 
     fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
-        if matches!(stmt, Stmt::ClassDef(_)) {
+        if let Stmt::ClassDef(cd) = stmt {
             self.next_is_class = true;
+            self.next_is_enum = cd.bases.iter().any(|b| is_enum_base(b))
+                || cd.keywords.iter().any(|kw| kw.arg.as_deref() == Some("metaclass") && is_enum_base(&kw.value));
             return;
         }
         // Only flag if the immediate scope is a class body (not a method inside a class)
         if !self.in_class.last().copied().unwrap_or(false) { return; }
+        if *self.is_enum.last().unwrap_or(&false) { return; }
 
         // Check simple assignments (not already annotated)
         if let Stmt::Assign(a) = stmt {
@@ -4445,6 +4473,7 @@ impl Checker for UnusedImportChecker {
                 }
             }
             Stmt::ImportFrom(i) => {
+                if i.module.as_deref() == Some("__future__") { return; }
                 for alias in &i.names {
                     if alias.name.as_str() == "*" { continue; }
                     let name = alias.asname.clone().unwrap_or_else(|| alias.name.clone());
