@@ -764,7 +764,6 @@ fn walk_expr(
             walk_expr_opt(s.upper.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
             walk_expr_opt(s.step.as_deref(), source, line_starts, checkers, stmt_idx, expr_idx, findings);
         }
-        _ => {}
     }
 }
 

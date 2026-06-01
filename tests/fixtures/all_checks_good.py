@@ -39,7 +39,7 @@ def good_enumerate(items) -> None:
 
 
 def good_join(items) -> str:
-    return "".join(str(x) for x in items)
+    return ''.join(str(x) for x in items)
 
 
 def good_direct_set(items) -> set:
@@ -54,16 +54,16 @@ def good_none_default(x=None) -> list:
 
 def good_typed_except() -> None:
     try:
-        print("hello")
+        print('hello')
     except ValueError:
         pass
 
 
 def good_typed_except_action() -> None:
     try:
-        print("hello")
+        print('hello')
     except ValueError:
-        print("error")
+        print('error')
 
 
 class GoodClass:
@@ -75,7 +75,7 @@ def good_keys_in(d, k) -> bool:
 
 
 def good_fstring(name) -> str:
-    return f"Hello {name}"
+    return f'Hello {name}'
 
 
 def good_short_function(x) -> int:
@@ -88,7 +88,7 @@ def good_few_params(a, b, c) -> int:
 
 
 def good_subprocess() -> None:
-    subprocess.run(["ls"])
+    subprocess.run(['ls'])
 
 
 def good_perf_counter() -> float:
@@ -137,7 +137,7 @@ def good_assert_expr(x) -> None:
 
 def good_simple_function(a) -> None:
     if a > 0:
-        print("positive")
+        print('positive')
 
 
 def good_power_opt(x) -> int:
@@ -173,7 +173,7 @@ class GoodDataclass:
 
 import re
 
-pattern = re.compile("[a-z]")
+pattern = re.compile('[a-z]')
 
 
 def good_use_pattern(s) -> bool:
@@ -181,7 +181,7 @@ def good_use_pattern(s) -> bool:
 
 
 def good_readlines() -> None:
-    with open("file.txt") as f:
+    with open('file.txt') as f:
         for line in f:
             print(line)
 
@@ -214,7 +214,7 @@ def good_comprehension(items) -> list:
 
 
 def good_with_open() -> None:
-    with open("file.txt") as f:
+    with open('file.txt') as f:
         print(f.read())
 
 
@@ -272,12 +272,12 @@ def good_used_loop_var() -> None:
 
 
 def good_single_with() -> None:
-    with open("/dev/null") as f:
+    with open('/dev/null') as f:
         print(f)
 
 
 def good_startswith_or(s) -> bool:
-    return s.startswith(("a", "b"))
+    return s.startswith(('a', 'b'))
 
 
 def good_return_cond(x) -> bool:
@@ -298,7 +298,7 @@ from os import path
 
 def good_no_redundant_pass() -> None:
     """docstring"""
-    print("body")
+    print('body')
 
 
 def good_is_literal(x) -> bool:
@@ -312,12 +312,13 @@ class GoodInitReturn:
 
 def good_no_dead_code(x) -> None:
     if x > 0:
-        print("maybe")
+        print('maybe')
 
 
 def good_def_outside_loop() -> None:
     def inner() -> None:
         pass
+
     for x in range(10):
         inner()
 
@@ -329,4 +330,4 @@ def good_raise_with_from() -> None:
     try:
         pass
     except Exception as e:
-        raise ValueError("with from") from e
+        raise ValueError('with from') from e

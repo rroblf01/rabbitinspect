@@ -40,7 +40,7 @@ def bad_range_len(items):
 
 
 def bad_str_concat(items):
-    s = ""
+    s = ''
     for x in items:
         s += str(x)
     return s
@@ -56,14 +56,14 @@ def bad_mutable_default(x=[]):
 
 def bad_bare_except():
     try:
-        print("hello")
+        print('hello')
     except:
         pass
 
 
 def bad_bare_except_pass():
     try:
-        print("hello")
+        print('hello')
     except:
         pass
 
@@ -77,7 +77,7 @@ def bad_keys_in(d, k):
 
 
 def bad_format_call(name):
-    return "Hello {}".format(name)
+    return 'Hello {}'.format(name)
 
 
 def bad_function_too_long():
@@ -121,7 +121,7 @@ def bad_too_many_params(a, b, c, d, e, f, g):
 
 
 def bad_os_system():
-    os.system("ls")
+    os.system('ls')
 
 
 def bad_time_time():
@@ -182,11 +182,11 @@ def bad_high_cyclomatic(a, b, c, d, e):
             if i % 2 == 0:
                 print(i)
             elif i % 3 == 0:
-                print("three")
+                print('three')
             elif i % 5 == 0:
-                print("five")
+                print('five')
             else:
-                print("other")
+                print('other')
     elif c > 0:
         while c > 0:
             c -= 1
@@ -200,7 +200,7 @@ def bad_high_cyclomatic(a, b, c, d, e):
         except RuntimeError:
             pass
     try:
-        with open("/dev/null") as f:
+        with open('/dev/null') as f:
             print(f.read())
     except OSError:
         pass
@@ -214,7 +214,7 @@ def bad_high_cognitive(a, b, c, d):
             if i % 2 == 0:
                 print(i)
             elif i % 3 == 0:
-                print("three")
+                print('three')
     elif c > 0:
         while c > 0:
             if c == 5:
@@ -269,11 +269,11 @@ import re
 
 
 def bad_re_compile():
-    return re.compile("[a-z]")
+    return re.compile('[a-z]')
 
 
 def bad_readlines():
-    f = open("file.txt")
+    f = open('file.txt')
     for line in f.readlines():
         print(line)
 
@@ -325,7 +325,7 @@ def bad_manual_list(items):
     return result
 
 
-bad_open_expr = open("/dev/null")
+bad_open_expr = open('/dev/null')
 
 
 def bad_sorted_index0(items):
@@ -382,17 +382,17 @@ def bad_if_not_assign(x):
 
 def bad_unused_loop_var():
     for _unused in range(10):
-        print("hello")
+        print('hello')
 
 
 def bad_nested_with():
-    with open("/dev/null") as f:
-        with open("/dev/zero") as g:
+    with open('/dev/null') as f:
+        with open('/dev/zero') as g:
             print(f, g)
 
 
 def bad_startswith_or(s):
-    return s.startswith("a") or s.startswith("b")
+    return s.startswith('a') or s.startswith('b')
 
 
 def bad_return_ternary(x):
@@ -401,7 +401,7 @@ def bad_return_ternary(x):
 
 def bad_while_true():
     while True:
-        print("infinite")
+        print('infinite')
 
 
 def bad_sorted_sort(items):
@@ -427,12 +427,13 @@ class BadInitReturn:
 
 def bad_dead_code():
     if True:
-        print("always")
+        print('always')
 
 
 def bad_def_in_loop():
     items = [1, 2, 3]
     for x in items:
+
         def inner():
             return x
 
@@ -444,11 +445,11 @@ def bad_raise_without_from():
     try:
         pass
     except:
-        raise ValueError("no from")
+        raise ValueError('no from')
 
 
 def bad_debug_leftover():
-    print("debug")
+    print('debug')
     breakpoint()
 
 
@@ -456,7 +457,7 @@ def bad_import_in_function():
     import os
 
 
-x = {"a": 1, "b": 2, "a": 3}
+x = {'a': 1, 'b': 2, 'a': 3}
 
 
 def bad_broad_except():
@@ -532,7 +533,7 @@ def bad_inconsistent_return(x):
 __all__ = ['foo', 42]
 
 
-eval("print(1)")
+eval('print(1)')
 
 
 pickle.loads(data)
@@ -570,7 +571,7 @@ def bad_loop_else(items):
         if x > 0:
             break
     else:
-        print("not found")
+        print('not found')
 
 
 result = not x in y

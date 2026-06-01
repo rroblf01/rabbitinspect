@@ -53,5 +53,5 @@ def simple_assert(x):
 
 def simple_function(a):
     if a > 0:
-        print("positive")
+        print('positive')
     return a

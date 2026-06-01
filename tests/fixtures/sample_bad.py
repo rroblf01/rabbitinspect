@@ -66,11 +66,11 @@ def complex_function(a, b, c, d, e):
             if i % 2 == 0:
                 print(i)
             elif i % 3 == 0:
-                print("three")
+                print('three')
             elif i % 5 == 0:
-                print("five")
+                print('five')
             else:
-                print("other")
+                print('other')
     elif c > 0:
         while c > 0:
             c -= 1
@@ -84,7 +84,7 @@ def complex_function(a, b, c, d, e):
         except RuntimeError:
             pass
     try:
-        with open("/dev/null") as f:
+        with open('/dev/null') as f:
             print(f.read())
     except OSError:
         pass
