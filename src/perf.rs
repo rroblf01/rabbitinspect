@@ -92,7 +92,7 @@ fn read_rss() -> Option<i64> {
 fn sample_once(py: Python<'_>, shared: &Mutex<Samples>, max_depth: usize) -> PyResult<()> {
     let sys = py.import("sys")?;
     let frames = sys.getattr("_current_frames")?.call0()?;
-    let dict = frames.downcast::<PyDict>().map_err(PyErr::from)?;
+    let dict = frames.cast::<PyDict>()?;
 
     let mut s = shared.lock().unwrap();
     if s.stacks.len() >= MAX_SAMPLES {

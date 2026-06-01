@@ -612,6 +612,12 @@ def print_code_list(color: bool) -> None:
 
 
 def main() -> None:
+    # `perf` is a subcommand of its own; intercept before the lint argument parser.
+    if len(sys.argv) > 1 and sys.argv[1] == 'perf':
+        from rabbitinspect.perf import run_perf_cli
+
+        sys.exit(run_perf_cli(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog='rabbitinspect',
         description='Python code performance analyzer — detects improvements in speed and efficiency',

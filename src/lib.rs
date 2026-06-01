@@ -5,6 +5,7 @@ use pyo3::types::{PyDict, PyList};
 pub mod analyze;
 pub mod checks;
 pub mod fix;
+pub mod perf;
 
 #[pyfunction]
 fn analyze_code(py: Python<'_>, source: &str) -> PyResult<Vec<Py<PyAny>>> {
@@ -66,5 +67,8 @@ fn apply_fixes(_py: Python<'_>, source: &str, fixes: Bound<'_, PyList>) -> PyRes
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_code, m)?)?;
     m.add_function(wrap_pyfunction!(apply_fixes, m)?)?;
+    m.add_function(wrap_pyfunction!(perf::perf_start, m)?)?;
+    m.add_function(wrap_pyfunction!(perf::perf_stop, m)?)?;
+    m.add_function(wrap_pyfunction!(perf::perf_running, m)?)?;
     Ok(())
 }
