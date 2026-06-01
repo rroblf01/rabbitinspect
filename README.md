@@ -130,9 +130,9 @@ Rules are grouped into categories so you can enable or disable related checks to
 
 | Category | Description | Count |
 |----------|-------------|-------|
-| **correctness** | Potential bugs and correctness issues | ~38 |
-| **performance** | Performance improvements | ~25 |
-| **style** | Code style and conventions | ~20 |
+| **correctness** | Potential bugs and correctness issues | 51 |
+| **performance** | Performance improvements | 29 |
+| **style** | Code style and conventions | 25 |
 | **typesafety** | Type annotation rules | 7 |
 | **complexity** | Code complexity metrics | 4 |
 | **import** | Import-related rules | 3 |
@@ -181,9 +181,13 @@ rabbitinspect src/ --ignore-category style,complexity
 | **RAB072** | Except handler only re-raises | ❌ |
 | **RAB075** | `isinstance(x, (A,))` → `isinstance(x, A)` | ✅ |
 | **RAB076** | `str()` on value already a string | ✅ |
+| **RAB077** | `assert` on a tuple literal (always true) | ✅ |
 | **RAB078** | `except Exception: pass` — silent swallow | ❌ |
 | **RAB079** | `__del__` method defined | ❌ |
+| **RAB081** | `return`/`break`/`continue` inside `finally` | ❌ |
+| **RAB082** | `except BaseException` too broad | ✅ |
 | **RAB083** | Nested ternary expression | ❌ |
+| **RAB084** | Bare `raise` outside an `except` block | ❌ |
 | **RAB099** | Duplicate key/element in dict/set literal | ❌ |
 | **RAB100** | Redundant `elif` after `return`/`raise`/`break`/`continue` | ❌ |
 | **RAB103** | Self-comparison (`x == x`) always True/False | ❌ |
@@ -256,6 +260,7 @@ rabbitinspect src/ --ignore-category style,complexity
 | **RAB073** | Old-style `%` string formatting | ❌ |
 | **RAB074** | `os.path.*` → `pathlib.Path` | ❌ |
 | **RAB080** | `list(d.keys())` / `list(d.values())` → `list(d)` | ✅ |
+| **RAB086** | `x == a or x == b` → `x in (a, b)` | ✅ |
 | **RAB107** | TODO/FIXME/HACK/XXX comment left in code | ❌ |
 | **RAB109** | Class name should use CamelCase convention | ❌ |
 | **RAB110** | Function name should use snake_case convention | ❌ |

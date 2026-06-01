@@ -2097,3 +2097,69 @@ class TestSelfAnalyze:
                 assert isinstance(f["code"], str)
                 assert isinstance(f["message"], str)
                 assert isinstance(f["line"], int)
+
+
+class TestRAB077AssertTuple:
+    def test_assert_tuple(self):
+        findings = check_code("assert (x > 0, 'must be positive')", {"RAB077"})
+        f = finding_by_code(findings, "RAB077")
+        assert f["fix"]["replacement"] == "x > 0, 'must be positive'"
+
+    def test_assert_three_elements_no_fix(self):
+        findings = check_code("assert (a, b, c)", {"RAB077"})
+        f = finding_by_code(findings, "RAB077")
+        assert f.get("fix") is None
+
+    def test_plain_assert_ok(self):
+        assert_no_findings("assert x > 0, 'must be positive'")
+
+
+class TestRAB081FinallyControlFlow:
+    def test_return_in_finally(self):
+        check_code("try:\n    g()\nfinally:\n    return 1\n", {"RAB081"})
+
+    def test_break_in_finally(self):
+        check_code("while True:\n    try:\n        g()\n    finally:\n        break\n", {"RAB081"})
+
+    def test_break_in_nested_loop_ok(self):
+        findings = analyze_code("try:\n    g()\nfinally:\n    for i in x:\n        break\n")
+        assert finding_by_code(findings, "RAB081") is None
+
+
+class TestRAB082BaseException:
+    def test_base_exception(self):
+        findings = check_code("try:\n    f()\nexcept BaseException:\n    pass\n", {"RAB082"})
+        f = finding_by_code(findings, "RAB082")
+        assert f["fix"]["replacement"] == "Exception"
+
+    def test_exception_ok(self):
+        findings = analyze_code("try:\n    f()\nexcept Exception:\n    pass\n")
+        assert finding_by_code(findings, "RAB082") is None
+
+
+class TestRAB084BareRaise:
+    def test_bare_raise_outside_except(self):
+        check_code("def f():\n    raise\n", {"RAB084"})
+
+    def test_bare_raise_in_except_ok(self):
+        findings = analyze_code("try:\n    f()\nexcept Exception:\n    raise\n")
+        assert finding_by_code(findings, "RAB084") is None
+
+    def test_raise_with_exc_ok(self):
+        findings = analyze_code("raise ValueError('x')\n")
+        assert finding_by_code(findings, "RAB084") is None
+
+
+class TestRAB086EqualityOrChain:
+    def test_eq_or_chain(self):
+        findings = check_code("if status == 200 or status == 201 or status == 204:\n    pass\n", {"RAB086"})
+        f = finding_by_code(findings, "RAB086")
+        assert f["fix"]["replacement"] == "status in (200, 201, 204)"
+
+    def test_different_operands_ok(self):
+        findings = analyze_code("if a == 1 or b == 2:\n    pass\n")
+        assert finding_by_code(findings, "RAB086") is None
+
+    def test_single_comparison_ok(self):
+        findings = analyze_code("if x == 1:\n    pass\n")
+        assert finding_by_code(findings, "RAB086") is None

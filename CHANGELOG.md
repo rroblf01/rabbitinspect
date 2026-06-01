@@ -2,14 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.1.0] - 2026-05-31
+## [1.1.0] - 2026-06-01
 
 ### Added
 
-#### New checks (11 new, total 118)
+#### New checks (17 new, total 120)
 
 | Code | Rule | Fix |
 |------|------|-----|
+| RAB077 | `assert` on a tuple literal (always true) | ✅ |
+| RAB081 | `return` / `break` / `continue` inside `finally` | ❌ |
+| RAB082 | `except BaseException` too broad (catches `SystemExit`/`KeyboardInterrupt`) | ✅ |
+| RAB084 | Bare `raise` outside an `except` block | ❌ |
+| RAB086 | `x == a or x == b` → `x in (a, b)` | ✅ |
 | RAB113 | `eval()` / `exec()` detected (security risk) | ❌ |
 | RAB114 | `pickle.load()` / `pickle.loads()` on untrusted data | ❌ |
 | RAB115 | `yaml.load()` without `Loader=` (security risk) | ❌ |
@@ -21,15 +26,30 @@ All notable changes to this project will be documented in this file.
 | RAB126 | Magic number literal, assign to named constant | ❌ |
 | RAB127 | Redundant `else` in loop with `break` | ❌ |
 | RAB128 | `not ... in` → `not in` (PEP 8) | ✅ |
+| RAB129 | f-string in logging call → lazy `%s` formatting | ✅ |
+
+### Changed
+
+- **RAB073**: SQL / gettext templates using only `%s` placeholders are no longer flagged as old-style string formatting
+- **RAB092**: Django-style inner config classes (`Meta`, `Options`, `Config`, …) are no longer flagged for missing attribute type annotations
+- **Category filtering**: added `--only-category` / `--ignore-category` CLI options to enable or skip groups of related checks
+
+### Performance
+
+- Checkers now declare whether they inspect statements, expressions, or both; the AST walk only dispatches relevant checkers per node instead of all of them
+- **RAB096**: unused-import lookup uses a hash set instead of a linear scan per import
+- Fewer per-literal string allocations in the magic-number and duplicate-key checks
 
 ### Fixed
 
 - **RAB001**: Variables used inside nested scopes (functions/classes) no longer falsely reported as unused
 - **RAB029/003/053/070**: Added parentheses when negating complex expressions (`not (a and b)` instead of `not a and b`)
+- **RAB067**: Function-name span for built-in shadowing is now located precisely instead of via a fragile substring fallback
 - **RAB092**: Assignments inside methods are no longer falsely flagged as class attributes
 - **RAB096**: Imports used inside nested scopes no longer falsely reported as unused
 - **RAB105**: Added scope stack to prevent state leaking from nested functions
 - **RAB109**: Classes with leading underscore (`_MyClass`) correctly recognized as CamelCase
+- **Autofix**: removed a dead/duplicated branch in overlapping-fix handling
 - **CI**: Removed broken `build-wheel` job; each test job now builds its own compatible wheel
 
 ## [1.0.0] - 2026-05-31

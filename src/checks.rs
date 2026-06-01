@@ -5445,3 +5445,202 @@ impl Checker for LoggingFstringChecker {
         });
     }
 }
+
+// ── RAB077: assert on a non-empty tuple literal (always true) ─────────
+// `assert (cond, "msg")` is always truthy because a non-empty tuple is
+// truthy; the author almost certainly meant `assert cond, "msg"`.
+
+pub struct AssertTupleChecker;
+
+impl Checker for AssertTupleChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    fn visit_stmt(&mut self, stmt: &Stmt, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Assert(a) = stmt else { return };
+        let Expr::Tuple(t) = &*a.test else { return };
+        if t.elts.is_empty() { return; }
+
+        let range = a.test.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+
+        // Offer a fix only for the common `assert (cond, msg)` shape: exactly
+        // two elements, no existing message, and a parenthesised tuple source.
+        let fix = if t.elts.len() == 2 && a.msg.is_none() {
+            let tsrc = &source[start..end];
+            if tsrc.starts_with('(') && tsrc.ends_with(')') {
+                let cond = expr_to_source(source, &t.elts[0]);
+                let msg = expr_to_source(source, &t.elts[1]);
+                Some(Fix { start, end, replacement: format!("{}, {}", cond, msg) })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB077".to_string(),
+            message: "Assertion on a tuple literal is always true; drop the parentheses (`assert cond, msg`)".to_string(),
+            fix,
+        });
+    }
+}
+
+// ── RAB081: return/break/continue inside a finally block ──────────────
+// Control flow that leaves a `finally` swallows any in-flight exception
+// and discards a pending return from the try/except body.
+
+pub struct FinallyControlFlowChecker;
+
+impl Checker for FinallyControlFlowChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let finalbody = match stmt {
+            Stmt::Try(t) => &t.finalbody,
+            Stmt::TryStar(t) => &t.finalbody,
+            _ => return,
+        };
+        // Only the top level of the finally matters: a break/continue that
+        // belongs to a loop nested inside the finally is local and fine.
+        for s in finalbody {
+            let kw = match s {
+                Stmt::Return(_) => "return",
+                Stmt::Break(_) => "break",
+                Stmt::Continue(_) => "continue",
+                _ => continue,
+            };
+            let range = s.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB081".to_string(),
+                message: format!("'{}' inside 'finally' swallows pending exceptions and returns", kw),
+                fix: None,
+            });
+        }
+    }
+}
+
+// ── RAB082: except BaseException is too broad ─────────────────────────
+// `BaseException` also catches `SystemExit` and `KeyboardInterrupt`,
+// preventing clean shutdown; catch `Exception` instead.
+
+pub struct BaseExceptionChecker;
+
+impl Checker for BaseExceptionChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let handlers = match stmt {
+            Stmt::Try(t) => &t.handlers,
+            Stmt::TryStar(t) => &t.handlers,
+            _ => return,
+        };
+        for handler in handlers {
+            let ExceptHandler::ExceptHandler(h) = handler;
+            let Some(t) = &h.type_ else { continue };
+            let Expr::Name(n) = &**t else { continue };
+            if n.id.as_str() != "BaseException" { continue; }
+            let range = t.range();
+            let start = text_size_to_usize(range.start());
+            let end = text_size_to_usize(range.end());
+            let (line, col) = byte_to_line_col(start, line_starts);
+            let (end_line, end_col) = byte_to_line_col(end, line_starts);
+            findings.push(Finding {
+                line, col, end_line, end_col,
+                code: "RAB082".to_string(),
+                message: "'except BaseException' also catches SystemExit/KeyboardInterrupt; catch 'Exception' instead".to_string(),
+                fix: Some(Fix { start, end, replacement: "Exception".to_string() }),
+            });
+        }
+    }
+}
+
+// ── RAB084: bare `raise` outside an except block ──────────────────────
+// A bare `raise` re-raises the active exception; with none active it
+// raises `RuntimeError: No active exception to re-raise`.
+
+pub struct BareRaiseChecker {
+    except_depth: usize,
+}
+
+impl BareRaiseChecker {
+    pub fn new() -> Self { Self { except_depth: 0 } }
+}
+
+impl Checker for BareRaiseChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Stmt }
+    // A function/class defined inside an except handler runs in a new frame
+    // with no active exception, so reset the counter at each scope boundary.
+    fn enter_scope(&mut self) { self.except_depth = 0; }
+    fn enter_except(&mut self) { self.except_depth += 1; }
+    fn exit_except(&mut self) { self.except_depth = self.except_depth.saturating_sub(1); }
+
+    fn visit_stmt(&mut self, stmt: &Stmt, _source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Stmt::Raise(r) = stmt else { return };
+        if r.exc.is_some() { return; } // not a bare raise
+        if self.except_depth > 0 { return; }
+        let range = stmt.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB084".to_string(),
+            message: "Bare 'raise' outside an 'except' block raises RuntimeError (no active exception)".to_string(),
+            fix: None,
+        });
+    }
+}
+
+// ── RAB086: x == a or x == b ... → x in (a, b, ...) ───────────────────
+
+pub struct EqualityOrChainChecker;
+
+fn is_simple_ref(expr: &Expr) -> bool {
+    matches!(expr, Expr::Name(_) | Expr::Attribute(_) | Expr::Subscript(_))
+}
+
+impl Checker for EqualityOrChainChecker {
+    fn node_kind(&self) -> crate::analyze::NodeKind { crate::analyze::NodeKind::Expr }
+    fn visit_expr(&mut self, expr: &Expr, source: &str, line_starts: &[usize], findings: &mut Vec<Finding>) {
+        let Expr::BoolOp(b) = expr else { return };
+        if !matches!(b.op, BoolOp::Or) { return; }
+        if b.values.len() < 2 { return; }
+
+        let mut left_src: Option<String> = None;
+        let mut rights: Vec<String> = Vec::with_capacity(b.values.len());
+        for v in &b.values {
+            let Expr::Compare(c) = v else { return };
+            if c.ops.len() != 1 || !matches!(c.ops[0], CmpOp::Eq) { return; }
+            if !is_simple_ref(&c.left) { return; }
+            let ls = expr_to_source(source, &c.left);
+            match &left_src {
+                None => left_src = Some(ls),
+                Some(prev) if *prev == ls => {}
+                _ => return, // operands differ → not a single-variable chain
+            }
+            rights.push(expr_to_source(source, &c.comparators[0]));
+        }
+        let Some(left) = left_src else { return };
+
+        let range = b.range();
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        let (line, col) = byte_to_line_col(start, line_starts);
+        let (end_line, end_col) = byte_to_line_col(end, line_starts);
+        let replacement = format!("{} in ({})", left, rights.join(", "));
+        findings.push(Finding {
+            line, col, end_line, end_col,
+            code: "RAB086".to_string(),
+            message: format!("Use '{} in (...)' instead of repeated '==' with 'or'", left),
+            fix: Some(Fix { start, end, replacement }),
+        });
+    }
+}

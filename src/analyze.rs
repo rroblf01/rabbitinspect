@@ -262,6 +262,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
     let mut broad_except = crate::checks::BroadExceptChecker;
     let mut unnecessary_pass = crate::checks::UnnecessaryPassChecker;
     let mut log_fstring = crate::checks::LoggingFstringChecker;
+    let mut assert_tuple = crate::checks::AssertTupleChecker;
+    let mut finally_ctrl = crate::checks::FinallyControlFlowChecker;
+    let mut base_exception = crate::checks::BaseExceptionChecker;
+    let mut bare_raise = crate::checks::BareRaiseChecker::new();
+    let mut eq_or_chain = crate::checks::EqualityOrChainChecker;
 
     let checkers: &mut [&mut dyn Checker] = &mut [
         &mut unused_vars,
@@ -378,6 +383,11 @@ pub fn analyze_source(source: &str) -> Vec<Finding> {
         &mut broad_except,
         &mut unnecessary_pass,
         &mut log_fstring,
+        &mut assert_tuple,
+        &mut finally_ctrl,
+        &mut base_exception,
+        &mut bare_raise,
+        &mut eq_or_chain,
     ];
 
     // Precompute, once, which checkers care about statements vs expressions so the

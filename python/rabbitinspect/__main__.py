@@ -319,12 +319,21 @@ EXPLANATIONS: dict[str, str] = {
     "RAB074": "Use pathlib.Path instead of os.path functions for modern path handling.",
     "RAB075": "Use isinstance(x, A) instead of isinstance(x, (A,)) for a single type.",
     "RAB076": "Redundant str() call on a value that is already a string.",
+    "RAB077": "Assertion on a tuple literal is always true; drop the parentheses "
+               "(assert cond, msg).",
     "RAB078": "except Exception: pass silently swallows all exceptions. Log the error or "
                "handle it properly.",
     "RAB079": "__del__ method defined. Use a context manager or explicit cleanup instead.",
     "RAB080": "Use list(d) instead of list(d.keys()) / list(d.values()).",
+    "RAB081": "return/break/continue inside a finally block swallows pending exceptions "
+               "and discards the value returned from the try/except body.",
+    "RAB082": "except BaseException also catches SystemExit/KeyboardInterrupt and prevents "
+               "clean shutdown. Catch Exception instead.",
     "RAB083": "Nested ternary expression harms readability. Use if/elif/else instead.",
+    "RAB084": "Bare raise outside an except block raises RuntimeError (no active exception "
+               "to re-raise).",
     "RAB085": "Use sorted(x, reverse=True) instead of reversed(sorted(x)).",
+    "RAB086": "Use 'x in (a, b)' instead of repeated '==' comparisons joined with 'or'.",
     "RAB087": "Use dict(zip(...)) instead of a dict comprehension over zip().",
     "RAB088": "Use 'while x:' instead of 'while len(x) > 0:'.",
     "RAB089": "Use x.copy() instead of copy.copy(x) for lists and dicts.",
@@ -469,11 +478,16 @@ RULES_CATEGORY: dict[str, str] = {
     "RAB074": "style",
     "RAB075": "correctness",
     "RAB076": "correctness",
+    "RAB077": "correctness",
     "RAB078": "correctness",
     "RAB079": "correctness",
     "RAB080": "style",
+    "RAB081": "correctness",
+    "RAB082": "correctness",
     "RAB083": "correctness",
+    "RAB084": "correctness",
     "RAB085": "performance",
+    "RAB086": "style",
     "RAB087": "performance",
     "RAB088": "performance",
     "RAB089": "performance",
@@ -544,8 +558,9 @@ def print_code_list(color: bool) -> None:
                 "RAB040", "RAB042", "RAB044", "RAB046", "RAB047", "RAB048",
                 "RAB049", "RAB052", "RAB054", "RAB055", "RAB057", "RAB058",
                 "RAB060", "RAB062", "RAB063", "RAB064", "RAB067", "RAB069",
-                "RAB070", "RAB071", "RAB075", "RAB076", "RAB080", "RAB085",
-                "RAB087", "RAB088", "RAB089", "RAB112", "RAB128",
+                "RAB070", "RAB071", "RAB075", "RAB076", "RAB077", "RAB080",
+                "RAB082", "RAB085", "RAB086", "RAB087", "RAB088", "RAB089",
+                "RAB112", "RAB128", "RAB129",
             ) else "❌"
             line = f"  {code}  {desc:<65} {has_fix}"
             if color:
