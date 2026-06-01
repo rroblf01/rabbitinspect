@@ -3,12 +3,11 @@
 import sys
 
 import pytest
-
 from rabbitinspect import _core
 from rabbitinspect.perf import (
     FunctionStat,
-    ProfileResult,
     Profiler,
+    ProfileResult,
     aggregate,
     profile_script,
     render_html,

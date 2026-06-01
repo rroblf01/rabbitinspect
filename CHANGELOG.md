@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] — 2.0 (in progress)
+
+Toward a Python **performance toolkit**: static lints plus a runtime profiler.
+
+### Added — runtime profiler (F1 spike)
+
+- **Sampling profiler core (Rust)**: a background thread snapshots every Python
+  thread's stack via `sys._current_frames()` (robust across CPython 3.10–3.14),
+  plus RSS sampling (Linux). Exposed as `_core.perf_start` / `perf_stop` /
+  `perf_running`.
+- **`rabbitinspect.perf` module**: `Profiler` context manager, aggregation into
+  per-function self/total time, and a self-contained **HTML report** (summary,
+  top functions, memory-over-time chart, folded stacks for flamegraph tools).
+- **CLI**: `rabbitinspect perf run <script> [--out report.html] [--interval MS]`.
+
+Notes: timings are statistical (sampling), not exact per-call. Roadmap: web
+framework request spans (Django/FastAPI), multi-worker, SQL/N+1, off-CPU,
+hotspot↔lint cross-reference, and attach-to-PID.
+
 ## [1.1.0] - 2026-06-01
 
 ### Added
