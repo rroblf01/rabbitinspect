@@ -246,6 +246,18 @@ pub fn perf_running() -> bool {
     slot().lock().unwrap().is_some()
 }
 
+/// Drop the current sampler WITHOUT joining its thread. Intended for use in a
+/// forked child, where the inherited sampler thread no longer exists (joining
+/// would hang). Dropping the `JoinHandle` detaches rather than joins.
+#[pyfunction]
+pub fn perf_reset() {
+    let mut g = slot().lock().unwrap();
+    if let Some(s) = g.take() {
+        s.stop.store(true, Ordering::Relaxed);
+        // `s` (and its JoinHandle) drops here — detach, never join.
+    }
+}
+
 /// Milliseconds elapsed since the current run started, or `-1.0` if not running.
 /// Web middleware uses this so request spans share the sampler's clock.
 #[pyfunction]

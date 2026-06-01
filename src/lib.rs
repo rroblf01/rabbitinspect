@@ -72,5 +72,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(perf::perf_running, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_now_ms, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_record_span, m)?)?;
+    m.add_function(wrap_pyfunction!(perf::perf_reset, m)?)?;
     Ok(())
 }

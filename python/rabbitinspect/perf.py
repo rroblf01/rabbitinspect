@@ -35,6 +35,31 @@ class FunctionStat:
 
 
 @dataclass
+class Span:
+    method: str
+    route: str
+    status: int
+    start_ms: float
+    end_ms: float
+
+    @property
+    def duration_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+
+@dataclass
+class EndpointStat:
+    method: str
+    route: str
+    count: int
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
+    errors: int  # 5xx responses
+
+
+@dataclass
 class ProfileResult:
     duration_ms: float
     sample_count: int
@@ -42,6 +67,8 @@ class ProfileResult:
     functions: list[FunctionStat]
     folded: list[tuple[str, int]]  # (root;...;leaf, count)
     rss: list[tuple[float, float]]  # (ms, bytes)
+    spans: list[Span] = field(default_factory=list)
+    endpoints: list[EndpointStat] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -117,6 +144,18 @@ def aggregate(raw: dict) -> ProfileResult:
     folded = sorted(folded_counts.items(), key=lambda kv: kv[1], reverse=True)
     rss = [(float(t), float(b)) for t, b in raw.get('rss', [])]
 
+    spans = [
+        Span(
+            method=str(s.get('method', '')),
+            route=str(s.get('route', '')),
+            status=int(s.get('status', 0)),
+            start_ms=float(s.get('start_ms', 0.0)),
+            end_ms=float(s.get('end_ms', 0.0)),
+        )
+        for s in raw.get('spans', [])
+    ]
+    endpoints = _aggregate_endpoints(spans)
+
     return ProfileResult(
         duration_ms=duration_ms,
         sample_count=sample_count,
@@ -124,8 +163,47 @@ def aggregate(raw: dict) -> ProfileResult:
         functions=functions,
         folded=folded,
         rss=rss,
+        spans=spans,
+        endpoints=endpoints,
         raw=raw,
     )
+
+
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    """Nearest-rank percentile of an already-sorted list."""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    rank = pct / 100.0 * (len(sorted_vals) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = rank - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def _aggregate_endpoints(spans: list[Span]) -> list[EndpointStat]:
+    groups: dict[tuple[str, str], list[Span]] = {}
+    for s in spans:
+        groups.setdefault((s.method, s.route), []).append(s)
+
+    stats: list[EndpointStat] = []
+    for (method, route), group in groups.items():
+        durations = sorted(s.duration_ms for s in group)
+        stats.append(
+            EndpointStat(
+                method=method,
+                route=route,
+                count=len(group),
+                p50_ms=_percentile(durations, 50),
+                p95_ms=_percentile(durations, 95),
+                p99_ms=_percentile(durations, 99),
+                max_ms=durations[-1],
+                errors=sum(1 for s in group if s.status >= 500),
+            )
+        )
+    stats.sort(key=lambda e: e.count * e.p50_ms, reverse=True)
+    return stats
 
 
 class Profiler:
@@ -202,6 +280,81 @@ def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
     return '\n'.join(rows)
 
 
+def _status_color(status: int) -> str:
+    if status >= 500:
+        return '#e03131'  # red
+    if status >= 400:
+        return '#f08c00'  # amber
+    if status >= 200:
+        return '#2b8a3e'  # green
+    return '#868e96'  # grey / unknown
+
+
+def _gantt_svg(spans: list[Span], duration_ms: float, width: int = 900, row_h: int = 14, max_rows: int = 200) -> str:
+    if not spans:
+        return ''
+    pad = 4
+    shown = spans[:max_rows]
+    height = pad * 2 + row_h * len(shown)
+    span_total = duration_ms or 1.0
+    inner = width - 2 * pad
+    bars = []
+    for i, s in enumerate(shown):
+        x = pad + max(0.0, s.start_ms) / span_total * inner
+        w = max(1.0, (s.end_ms - s.start_ms) / span_total * inner)
+        y = pad + i * row_h
+        color = _status_color(s.status)
+        label = html.escape(f'{s.method} {s.route} [{s.status}] {s.duration_ms:.0f}ms')
+        bars.append(
+            f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{row_h - 2}" '
+            f'fill="{color}" rx="1"><title>{label}</title></rect>'
+        )
+    extra = (
+        f'<text x="{pad}" y="{height - 2}" class="axis">+{len(spans) - max_rows} more requests not shown</text>'
+        if len(spans) > max_rows
+        else ''
+    )
+    return (
+        f'<svg viewBox="0 0 {width} {height}" class="chart" role="img" aria-label="Request timeline">'
+        + ''.join(bars)
+        + extra
+        + '</svg>'
+    )
+
+
+def _endpoint_rows(endpoints: list[EndpointStat]) -> str:
+    rows = []
+    for e in endpoints:
+        err = f'<span style="color:#e03131">{e.errors}</span>' if e.errors else '0'
+        rows.append(
+            '<tr>'
+            f'<td class="name">{html.escape(e.method)} {html.escape(e.route)}</td>'
+            f'<td class="num">{e.count}</td>'
+            f'<td class="num">{e.p50_ms:.1f}</td>'
+            f'<td class="num">{e.p95_ms:.1f}</td>'
+            f'<td class="num">{e.p99_ms:.1f}</td>'
+            f'<td class="num">{e.max_ms:.1f}</td>'
+            f'<td class="num">{err}</td>'
+            '</tr>'
+        )
+    return '\n'.join(rows)
+
+
+def _requests_section(result: ProfileResult) -> str:
+    if not result.spans:
+        return ''
+    return f"""
+  <h2>Requests <span class="muted">({len(result.spans)} total, {len(result.endpoints)} endpoints)</span></h2>
+  {_gantt_svg(result.spans, result.duration_ms)}
+  <table>
+    <thead><tr><th>Endpoint</th><th class="num">Count</th><th class="num">p50 ms</th><th class="num">p95 ms</th><th class="num">p99 ms</th><th class="num">max ms</th><th class="num">5xx</th></tr></thead>
+    <tbody>
+    {_endpoint_rows(result.endpoints)}
+    </tbody>
+  </table>
+"""
+
+
 def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
     """Render a self-contained HTML report."""
     peak_mb = result.peak_rss_bytes / (1024 * 1024)
@@ -265,7 +418,7 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
 
   <h2>Memory over time</h2>
   {_rss_svg(result.rss)}
-
+  {_requests_section(result)}
   <h2>Top functions by self time</h2>
   <table>
     <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th>Self %</th></tr></thead>
