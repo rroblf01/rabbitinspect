@@ -17,9 +17,22 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   top functions, memory-over-time chart, folded stacks for flamegraph tools).
 - **CLI**: `rabbitinspect perf run <script> [--out report.html] [--interval MS]`.
 
-Notes: timings are statistical (sampling), not exact per-call. Roadmap: web
-framework request spans (Django/FastAPI), multi-worker, SQL/N+1, off-CPU,
-hotspot↔lint cross-reference, and attach-to-PID.
+### Added — web framework integration (F2)
+
+- **WSGI / ASGI middleware** (`rabbitinspect.perf_web`): records one request span
+  per request (method, route, status, duration) into the running sampler.
+  Pass-through no-op when the profiler is off, so it's safe to leave installed.
+  Django (`WSGIProfilerMiddleware`), FastAPI/Starlette (`ASGIProfilerMiddleware`).
+- **Per-endpoint aggregation**: count, p50/p95/p99, max, and 5xx error count.
+- **Request timeline (Gantt)** + endpoint table in the HTML report, color-coded
+  by status class.
+- **Multi-worker support**: `enable_fork_profiling()` restarts a fresh sampler in
+  forked workers (gunicorn/uvicorn) via `os.register_at_fork`, since OS threads
+  do not survive `fork()`. New `_core.perf_now_ms` / `perf_record_span` /
+  `perf_reset` primitives back this.
+
+Notes: timings are statistical (sampling), not exact per-call. Roadmap: SQL/N+1,
+off-CPU, hotspot↔lint cross-reference, and attach-to-PID.
 
 ## [1.1.0] - 2026-06-01
 
