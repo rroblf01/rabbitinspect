@@ -266,6 +266,11 @@ def test_flamegraph_interactive_zoom_data():
     assert 'addEventListener("click"' in svg
     # full-width root frame spans the whole [0,1] range
     assert 'data-f0="0.000000" data-f1="1.000000"' in svg
+    # regression: the script must live in HTML context (after </svg>), NOT inside
+    # the SVG — document.currentScript is null for SVG <script> elements.
+    assert 'currentScript' not in svg
+    assert svg.index('</svg>') < svg.index('<script>')
+    assert 'querySelectorAll("svg.flame")' in svg
 
 
 def test_flamegraph_empty():

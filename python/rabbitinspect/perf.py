@@ -832,9 +832,13 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
     emit(root_children, 0, 0)
     height = (max_depth + 1) * row_h + pad
     # Click a frame to zoom into its sub-tree; click the background to reset.
+    # The script lives in HTML context (not inside the SVG) so it runs reliably:
+    # `document.currentScript` is null for SVG <script> elements, and querying by
+    # class avoids depending on it. Width comes from the SVG's own viewBox.
     script = (
-        '<script>(function(){'
-        'var s=document.currentScript.parentNode,W=' + str(width) + ';'
+        '<script>'
+        'document.querySelectorAll("svg.flame").forEach(function(s){'
+        'var W=s.viewBox.baseVal.width;'
         'var gs=[].slice.call(s.querySelectorAll("g[data-f0]"));'
         'function zoom(a,b){var sp=b-a;if(sp<=0)return;gs.forEach(function(g){'
         'var f0=+g.dataset.f0,f1=+g.dataset.f1,n0=(f0-a)/sp,n1=(f1-a)/sp;'
@@ -846,13 +850,14 @@ def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -
         'gs.forEach(function(g){g.style.cursor="pointer";g.addEventListener("click",function(e){'
         'e.stopPropagation();zoom(+g.dataset.f0,+g.dataset.f1);});});'
         's.addEventListener("click",function(){zoom(0,1);});'
-        '})();</script>'
+        '});</script>'
     )
-    return (
+    svg = (
         f'<svg viewBox="0 0 {width} {height}" class="chart flame" role="img" '
         f'aria-label="Flamegraph" preserveAspectRatio="xMidYMin meet">'
-        f'{"".join(rects)}{script}</svg>'
+        f'{"".join(rects)}</svg>'
     )
+    return svg + script
 
 
 def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
