@@ -607,6 +607,90 @@ def _hotspot_lints_section(result: ProfileResult) -> str:
 """
 
 
+def _flame_color(name: str) -> str:
+    """Stable warm flamegraph color (orange-yellow band) from a frame name."""
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    hue = 18 + h % 42  # 18..59 → red-orange to yellow
+    light = 50 + (h >> 8) % 12  # 50..61
+    return f'hsl({hue},85%,{light}%)'
+
+
+def _flamegraph_svg(result: ProfileResult, width: int = 1100, row_h: int = 18) -> str:
+    """Render an inline icicle flamegraph (root at top) from folded stacks.
+
+    Each frame's width is proportional to its sample count; children sit below
+    their parent. Self-contained SVG — no JS required to view the shape.
+    """
+    if not result.folded:
+        return '<p class="muted">No stacks captured.</p>'
+
+    # Build a call tree of frames; each node tracks its cumulative sample count.
+    class _Node:
+        __slots__ = ('count', 'children')
+
+        def __init__(self) -> None:
+            self.count = 0
+            self.children: dict[str, _Node] = {}
+
+    root_children: dict[str, _Node] = {}
+    total = 0
+    for path, count in result.folded:
+        total += count
+        node = root_children
+        for name in path.split(';'):
+            child = node.get(name)
+            if child is None:
+                child = _Node()
+                node[name] = child
+            child.count += count
+            node = child.children
+    if total == 0:
+        return '<p class="muted">No stacks captured.</p>'
+
+    pad = 2
+    scale = (width - 2 * pad) / total
+    rects: list[str] = []
+    max_depth = 0
+
+    def emit(children: dict[str, _Node], x: float, depth: int) -> None:
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
+        # Stable left-to-right order: heaviest first, then by name.
+        for name, child in sorted(children.items(), key=lambda kv: (-kv[1].count, kv[0])):
+            count = child.count
+            w = count * scale
+            y = depth * row_h
+            ms = count / total * result.duration_ms
+            pct = count / total * 100
+            label = name.split('\t')[0]
+            title = html.escape(f'{label} — {count} samples ({pct:.1f}%, {ms:.0f} ms)')
+            text = ''
+            if w > 28:
+                shown = label if len(label) * 6.5 < w else label[: max(1, int(w / 6.5))] + '…'
+                text = (
+                    f'<text x="{x + 3:.1f}" y="{y + row_h - 5}" '
+                    f'font-size="11" fill="#1a1a1a" pointer-events="none">{html.escape(shown)}</text>'
+                )
+            rects.append(
+                f'<g><title>{title}</title>'
+                f'<rect x="{x:.1f}" y="{y}" width="{max(w - 1, 0.5):.1f}" height="{row_h - 1}" '
+                f'rx="1.5" fill="{_flame_color(label)}" stroke="#fff" stroke-width="0.5"/>'
+                f'{text}</g>'
+            )
+            emit(child.children, x, depth + 1)
+            x += w
+
+    emit(root_children, pad, 0)
+    height = (max_depth + 1) * row_h + pad
+    return (
+        f'<svg viewBox="0 0 {width} {height}" class="chart flame" role="img" '
+        f'aria-label="Flamegraph" preserveAspectRatio="xMidYMin meet">'
+        f'{"".join(rects)}</svg>'
+    )
+
+
 def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report') -> str:
     """Render a self-contained HTML report."""
     peak_mb = result.peak_rss_bytes / (1024 * 1024)
@@ -651,6 +735,9 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   td.bar span {{ display: inline-block; height: 12px; background: #3b82f6; border-radius: 2px; vertical-align: middle; }}
   td.bar em {{ font-style: normal; font-size: 11px; color: #6b7280; margin-left: 6px; }}
   .chart {{ width: 100%; max-width: 900px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }}
+  .flame {{ max-width: 1100px; }}
+  .flame rect {{ cursor: default; }}
+  .flame g:hover rect {{ stroke: #1f2937; stroke-width: 1; }}
   .axis {{ font-size: 10px; fill: #9ca3af; }}
   .muted {{ color: #9ca3af; }}
   .warn {{ color: #b45309; }}
@@ -678,6 +765,8 @@ def render_html(result: ProfileResult, title: str = 'rabbitinspect perf report')
   {_requests_section(result)}
   {_database_section(result)}
   {_hotspot_lints_section(result)}
+  <h2>Flamegraph <span class="muted">(width = share of samples; hover for detail)</span></h2>
+  {_flamegraph_svg(result)}
   <h2>Top functions by self time</h2>
   <table>
     <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th>Self %</th></tr></thead>

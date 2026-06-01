@@ -185,6 +185,58 @@ def test_render_html_sections():
     assert '20.0 MB peak' in html  # RSS chart label
 
 
+def test_render_html_flamegraph():
+    html = render_html(_synthetic_result())
+    assert 'Flamegraph' in html
+    assert 'class="chart flame"' in html
+    # one rect per tree node: main, compute → at least 2 rects
+    assert html.count('<rect') >= 2
+    # frame label + sample count appear in a <title> tooltip
+    assert 'samples' in html
+
+
+def test_flamegraph_widths_proportional():
+    from rabbitinspect.perf import _flamegraph_svg
+
+    # main=100 samples total (60 self via 'main', 40 through 'main;compute')
+    r = ProfileResult(
+        duration_ms=100.0,
+        sample_count=100,
+        truncated=False,
+        functions=[],
+        folded=[('main', 60), ('main;compute', 40)],
+        rss=[],
+    )
+    svg = _flamegraph_svg(r, width=1000)
+    import re
+
+    widths = {}
+    for g in re.findall(r'<g>.*?</g>', svg):
+        name = re.search(r'<title>([^ ]+)', g)
+        w = re.search(r'width="([\d.]+)"', g)
+        if name and w:
+            widths[name.group(1)] = float(w.group(1))
+    # main spans full width; compute is 40% of it.
+    assert widths['main'] > 980
+    assert 380 < widths['compute'] < 420
+
+
+def test_flamegraph_empty():
+    from rabbitinspect.perf import _flamegraph_svg
+
+    r = ProfileResult(100.0, 0, False, [], [], [])
+    assert 'No stacks' in _flamegraph_svg(r)
+
+
+def test_flamegraph_escapes_names():
+    from rabbitinspect.perf import _flamegraph_svg
+
+    r = ProfileResult(10.0, 1, False, [], [('<script>x', 1)], [])
+    svg = _flamegraph_svg(r)
+    assert '<script>x' not in svg
+    assert '&lt;script&gt;x' in svg
+
+
 def test_render_html_truncated_warning():
     r = _synthetic_result()
     r.truncated = True

@@ -14,7 +14,7 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   `perf_running`.
 - **`rabbitinspect.perf` module**: `Profiler` context manager, aggregation into
   per-function self/total time, and a self-contained **HTML report** (summary,
-  top functions, memory-over-time chart, folded stacks for flamegraph tools).
+  top functions, memory-over-time chart, inline flamegraph, folded stacks).
 - **CLI**: `rabbitinspect perf run <script> [--out report.html] [--interval MS]`.
 
 ### Added — web framework integration (F2)
@@ -48,6 +48,10 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 
 ### Added — export, demo & docs
 
+- **Inline flamegraph**: the HTML report now embeds a self-contained icicle
+  flamegraph (SVG, no JS) built from the folded stacks — frame width is the
+  share of samples, hover shows sample count / % / ms. Works for both in-process
+  and remote-attach profiles.
 - **Speedscope export**: `rabbitinspect perf run … --speedscope profile.json`
   writes a [speedscope](https://speedscope.app) file for an interactive
   flamegraph / time-order view (`perf.to_speedscope`).
