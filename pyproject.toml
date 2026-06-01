@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "rabbitinspect"
-version = "1.1.0"
-description = "Python code performance analyzer written in Rust — detects unused variables, None comparisons, list vs generator, and more"
+version = "2.0.0.dev0"
+description = "Python code performance toolkit written in Rust — static perf/correctness lints plus a sampling runtime profiler"
 readme = "README.md"
 authors = [
     { name = "Ricardo Robles", email = "ricardo.r.f@hotmail.com" }
