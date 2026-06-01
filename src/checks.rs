@@ -4,9 +4,29 @@ use rustpython_ast::*;
 
 // ── RAB001: Unused variables ──────────────────────────────────────────────
 
+fn collect_all_names_from_expr(expr: &Expr, names: &mut Vec<String>) {
+    match expr {
+        Expr::List(l) => {
+            for elt in &l.elts {
+                if let Expr::Constant(c) = elt {
+                    if let Constant::Str(s) = &c.value { names.push(s.clone()); }
+                } else if let Expr::Name(n) = elt {
+                    names.push(n.id.to_string());
+                }
+            }
+        }
+        Expr::Constant(c) => {
+            if let Constant::Str(s) = &c.value { names.push(s.clone()); }
+        }
+        Expr::Name(n) => { names.push(n.id.to_string()); }
+        _ => {}
+    }
+}
+
 pub struct UnusedVarsChecker {
     assigned: Vec<(String, usize, usize)>,
     used: Vec<String>,
+    all_names: Vec<String>,
     scope_stack: Vec<(Vec<(String, usize, usize)>, Vec<String>)>,
     dataclass_depth: usize,
     next_scope_is_class: bool,
@@ -18,6 +38,7 @@ impl UnusedVarsChecker {
         Self {
             assigned: Vec::new(),
             used: Vec::new(),
+            all_names: Vec::new(),
             scope_stack: Vec::new(),
             dataclass_depth: 0,
             next_scope_is_class: false,
@@ -83,6 +104,7 @@ impl Checker for UnusedVarsChecker {
             self.dataclass_depth -= 1;
         }
         self.scope_types.pop();
+        self.used.extend(self.all_names.drain(..));
         let used_set: FxHashSet<&str> = self.used.iter().map(|s| s.as_str()).collect();
         for (name, line, col) in &self.assigned {
             if name.starts_with('_') {
@@ -151,6 +173,13 @@ impl Checker for UnusedVarsChecker {
             }
             Stmt::Assign(a) => {
                 if !self.in_class_body() {
+                    if a.targets.len() == 1 {
+                        if let Expr::Name(n) = &a.targets[0] {
+                            if n.id.as_str() == "__all__" {
+                                collect_all_names_from_expr(&a.value, &mut self.all_names);
+                            }
+                        }
+                    }
                     for target in &a.targets {
                         self.collect_names_from_target(target, line_starts);
                     }
@@ -163,9 +192,27 @@ impl Checker for UnusedVarsChecker {
             }
             Stmt::AugAssign(a) => {
                 if !self.in_class_body() {
+                    if let Expr::Name(n) = &*a.target {
+                        if n.id.as_str() == "__all__" {
+                            collect_all_names_from_expr(&a.value, &mut self.all_names);
+                        }
+                    }
                     self.collect_names_from_target(&a.target, line_starts);
                     if let Expr::Name(n) = &*a.target {
                         self.used.push(n.id.to_string());
+                    }
+                }
+            }
+            Stmt::Expr(e) => {
+                if let Expr::Call(c) = &*e.value {
+                    if let Expr::Attribute(a) = &*c.func {
+                        if let Expr::Name(n) = &*a.value {
+                            if n.id.as_str() == "__all__" && (a.attr.as_str() == "append" || a.attr.as_str() == "extend") {
+                                if let Some(arg) = c.args.first() {
+                                    collect_all_names_from_expr(arg, &mut self.all_names);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4343,6 +4390,7 @@ impl Checker for ConstantNameChecker {
 pub struct UnusedImportChecker {
     imports: Vec<(String, String, usize, usize)>, // (display_name, original_name, line, col)
     used: Vec<String>,
+    all_names: Vec<String>,
     scope_stack: Vec<(Vec<(String, String, usize, usize)>, Vec<String>)>,
 }
 
@@ -4351,6 +4399,7 @@ impl UnusedImportChecker {
         Self {
             imports: Vec::new(),
             used: Vec::new(),
+            all_names: Vec::new(),
             scope_stack: Vec::new(),
         }
     }
@@ -4365,6 +4414,7 @@ impl Checker for UnusedImportChecker {
     }
 
     fn exit_scope(&mut self, findings: &mut Vec<Finding>) {
+        self.used.extend(self.all_names.drain(..));
         for (name, _original, line, col) in &self.imports {
             if !self.used.iter().any(|u| u.as_str() == name.as_str()) {
                 findings.push(Finding {
@@ -4401,6 +4451,35 @@ impl Checker for UnusedImportChecker {
                     let range = alias.range();
                     let (line, col) = byte_to_line_col(text_size_to_usize(range.start()), line_starts);
                     self.imports.push((name.to_string(), name.to_string(), line, col));
+                }
+            }
+            Stmt::Assign(a) => {
+                if a.targets.len() == 1 {
+                    if let Expr::Name(n) = &a.targets[0] {
+                        if n.id.as_str() == "__all__" {
+                            collect_all_names_from_expr(&a.value, &mut self.all_names);
+                        }
+                    }
+                }
+            }
+            Stmt::AugAssign(a) => {
+                if let Expr::Name(n) = &*a.target {
+                    if n.id.as_str() == "__all__" {
+                        collect_all_names_from_expr(&a.value, &mut self.all_names);
+                    }
+                }
+            }
+            Stmt::Expr(e) => {
+                if let Expr::Call(c) = &*e.value {
+                    if let Expr::Attribute(a) = &*c.func {
+                        if let Expr::Name(n) = &*a.value {
+                            if n.id.as_str() == "__all__" && (a.attr.as_str() == "append" || a.attr.as_str() == "extend") {
+                                if let Some(arg) = c.args.first() {
+                                    collect_all_names_from_expr(arg, &mut self.all_names);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
