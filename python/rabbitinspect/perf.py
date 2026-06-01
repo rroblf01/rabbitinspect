@@ -50,6 +50,15 @@ class MemAlloc:
 
 
 @dataclass
+class AsyncTaskInfo:
+    """A snapshot of one asyncio task: its name, state, and coroutine stack."""
+
+    name: str
+    state: str  # 'pending' | 'done'
+    stack: list[str]  # leaf-first "func\tfile\tline" entries
+
+
+@dataclass
 class Span:
     method: str
     route: str
@@ -1159,6 +1168,134 @@ def profile_script(
     assert prof.result is not None
     analyze_hotspots(prof.result)
     return prof.result
+
+
+# ── asyncio task awareness ────────────────────────────────────────────────
+#
+# The Rust sampler reads `sys._current_frames()`, which only sees frames of
+# OS threads that are *running* Python. A coroutine that is `await`-ing (the
+# common case for an async server under load) has its frames detached from any
+# thread, so it is invisible to that sampler. Here we sample the event loop's
+# tasks directly via `Task.get_stack()`, capturing where suspended coroutines
+# are parked. The captured stacks reuse the normal folded-stack format, so they
+# flow through `aggregate` / the flamegraph / the HTML report unchanged.
+
+
+def async_task_snapshot(loop=None) -> list[AsyncTaskInfo]:
+    """Snapshot every asyncio task on ``loop`` (or the running loop)."""
+    import asyncio
+
+    try:
+        tasks = asyncio.all_tasks(loop) if loop is not None else asyncio.all_tasks()
+    except RuntimeError:
+        return []  # no running loop
+
+    infos: list[AsyncTaskInfo] = []
+    for task in tasks:
+        try:
+            frames = task.get_stack()
+        except Exception:
+            continue
+        # get_stack() is oldest-frame-first; we want leaf (await point) first.
+        stack = [
+            f'{fr.f_code.co_name}\t{fr.f_code.co_filename}\t{fr.f_lineno}'
+            for fr in reversed(frames)
+        ]
+        name = task.get_name() if hasattr(task, 'get_name') else repr(task)
+        infos.append(AsyncTaskInfo(name=name, state='done' if task.done() else 'pending', stack=stack))
+    return infos
+
+
+class AsyncSampler:
+    """Background sampler for suspended coroutines on an asyncio loop.
+
+    Complements :class:`Profiler`: where the CPU sampler catches the coroutine
+    currently running on the loop thread, this catches all the *awaiting* ones.
+    Call :meth:`stop` to get a :class:`ProfileResult` whose flamegraph shows the
+    await hotspots.
+    """
+
+    def __init__(self, loop, interval_ms: float = 10.0):
+        import threading
+
+        self.loop = loop
+        self.interval = interval_ms / 1000.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start = 0.0
+        self._frames: list[str] = []
+        self._index: dict[str, int] = {}
+        self._stacks: list[list[int]] = []
+        self._ts: list[float] = []
+
+    def _intern(self, entry: str) -> int:
+        idx = self._index.get(entry)
+        if idx is None:
+            idx = len(self._frames)
+            self._frames.append(entry)
+            self._index[entry] = idx
+        return idx
+
+    def _run(self) -> None:
+        import time
+
+        while not self._stop.is_set():
+            now = (time.perf_counter() - self._start) * 1000.0
+            for info in async_task_snapshot(self.loop):
+                # only count parked coroutines — running ones are the CPU sampler's job
+                if info.state == 'pending' and info.stack:
+                    self._stacks.append([self._intern(e) for e in info.stack])
+                    self._ts.append(now)
+            self._stop.wait(self.interval)
+
+    def start(self) -> 'AsyncSampler':
+        import threading
+        import time
+
+        self._start = time.perf_counter()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> ProfileResult:
+        import time
+
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        raw = {
+            'frames': self._frames,
+            'stacks': self._stacks,
+            'ts': self._ts,
+            'tids': [],
+            'rss': [],
+            'spans': [],
+            'queries': [],
+            'duration_ms': (time.perf_counter() - self._start) * 1000.0,
+            'sample_count': len(self._stacks),
+            'truncated': False,
+        }
+        return aggregate(raw)
+
+
+def profile_asyncio(main, interval_ms: float = 10.0) -> ProfileResult:
+    """Run an async entrypoint and profile its awaiting coroutines.
+
+    ``main`` is a zero-arg coroutine function (e.g. ``async def main(): ...``).
+    Returns a :class:`ProfileResult` over the suspended-coroutine stacks — its
+    flamegraph shows where the program spends time parked on ``await``.
+    """
+    import asyncio
+
+    async def _driver() -> ProfileResult:
+        sampler = AsyncSampler(asyncio.get_running_loop(), interval_ms=interval_ms).start()
+        try:
+            await main()
+        finally:
+            result = sampler.stop()
+        return result
+
+    return asyncio.run(_driver())
 
 
 def _read_remote_rss(pid: int) -> float | None:

@@ -58,6 +58,12 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   records live allocations via `tracemalloc` at stop and attributes each to its
   function (AST line ranges), shown as a "Top allocations by size" table.
   `ProfileResult.mem_allocations` / `MemAlloc`.
+- **asyncio task awareness**: the CPU sampler only sees running OS threads, so
+  `await`-ing coroutines (the common case under load) were invisible. New
+  `perf.AsyncSampler` / `profile_asyncio(main)` sample the event loop's tasks via
+  `Task.get_stack()`, capturing where suspended coroutines are parked; the result
+  reuses the normal aggregation, so its flamegraph shows the await hotspots.
+  Also `async_task_snapshot()` / `AsyncTaskInfo` for one-shot task census.
 - **Speedscope export**: `rabbitinspect perf run … --speedscope profile.json`
   writes a [speedscope](https://speedscope.app) file for an interactive
   flamegraph / time-order view (`perf.to_speedscope`).

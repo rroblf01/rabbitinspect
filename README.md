@@ -341,6 +341,20 @@ The report includes:
 - **Database** section: slowest queries and **N+1 detection** (repeated query shapes within one request).
 - **Hotspots with lint findings**: the hottest functions cross-referenced against rabbitinspect's own static rules — the static perf rules pointed straight at the code that dominates runtime.
 
+### Async (asyncio)
+
+The CPU sampler only sees threads that are *running* Python, so `await`-ing coroutines are invisible to it. `profile_asyncio` samples the event loop's tasks directly — its flamegraph shows where coroutines are parked on `await`.
+
+```python
+from rabbitinspect.perf import profile_asyncio
+
+async def main():
+    await do_async_work()
+
+result = profile_asyncio(main)        # runs main() and samples awaiting tasks
+open('async.html', 'w').write(result.to_html())
+```
+
 ### Web frameworks
 
 Drop-in middleware records one span per request (method, route, status, duration). Both are no-ops when the profiler is off, so they are safe to leave installed.
