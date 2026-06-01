@@ -300,14 +300,17 @@ pub fn interpreter_details(_pid: i32) -> std::io::Result<()> {
     ))
 }
 
-// ── remote stack sampling via _Py_DebugOffsets (Linux, CPython 3.12+) ────────
+// ── remote stack sampling via _Py_DebugOffsets (Linux, CPython 3.13+) ────────
 //
-// Since 3.12, `_PyRuntime` begins with a `_Py_DebugOffsets` block (cookie
+// Since 3.13, `_PyRuntime` begins with a `_Py_DebugOffsets` block (cookie
 // "xdebugpy") that publishes the struct field offsets needed for out-of-process
-// debugging. We read the offsets straight from the target, so the walk adapts to
-// the target's exact build instead of hardcoding per-version type layouts. The
-// positions below (where each offset lives *inside* `_Py_DebugOffsets`) were
-// validated against CPython 3.14 by recovering a known call stack.
+// debugging. We read those offsets straight from the target, so the walk adapts
+// to the target's exact build instead of hardcoding per-version *type* layouts.
+// The one thing that still moves between versions is *where* each offset lives
+// inside the `_Py_DebugOffsets` blob (later sub-structs slide as earlier ones
+// gain fields); see `OffsetPositions` for the per-version position tables,
+// validated against CPython 3.13 and 3.14 by recovering a known call stack.
+// 3.11/3.12 predate this block and are unsupported for sampling.
 
 #[cfg(target_os = "linux")]
 struct DebugOffsets {
@@ -336,31 +339,97 @@ fn read_ptr(pid: i32, addr: usize) -> std::io::Result<usize> {
     Ok(u64::from_le_bytes(b[..8].try_into().unwrap()) as usize)
 }
 
+// Where each field's offset lives *inside* the target's `_Py_DebugOffsets`
+// blob. The cookie + `interpreter_state` start at fixed positions across
+// versions, but later sub-structs (thread_state / interpreter_frame /
+// code_object) slide as earlier ones gain fields. These two tables were
+// derived by dumping the blob from live 3.13 and 3.14 interpreters. The
+// in-substruct field order is stable, so only the block start moves.
 #[cfg(target_os = "linux")]
-fn read_debug_offsets(pid: i32, runtime_addr: usize) -> std::io::Result<DebugOffsets> {
+struct OffsetPositions {
+    interp_head: usize,
+    interp_next: usize,
+    threads_head: usize,
+    tstate_next: usize,
+    tstate_current_frame: usize,
+    tstate_native_thread_id: usize,
+    frame_previous: usize,
+    frame_executable: usize,
+    frame_instr_ptr: usize,
+    code_filename: usize,
+    code_name: usize,
+    code_linetable: usize,
+    code_firstlineno: usize,
+    code_code_adaptive: usize,
+}
+
+// 3.14 layout (also used as the best guess for newer versions).
+#[cfg(target_os = "linux")]
+const POS_314: OffsetPositions = OffsetPositions {
+    interp_head: 40,
+    interp_next: 64,
+    threads_head: 72,
+    tstate_next: 192,
+    tstate_current_frame: 208,
+    tstate_native_thread_id: 224,
+    frame_previous: 256,
+    frame_executable: 264,
+    frame_instr_ptr: 272,
+    code_filename: 320,
+    code_name: 328,
+    code_linetable: 344,
+    code_firstlineno: 352,
+    code_code_adaptive: 384,
+};
+
+// 3.13 layout: interpreter_state is smaller, so thread_state/frame/code blocks
+// sit earlier in the blob.
+#[cfg(target_os = "linux")]
+const POS_313: OffsetPositions = OffsetPositions {
+    interp_head: 40,
+    interp_next: 64,
+    threads_head: 72,
+    tstate_next: 168,
+    tstate_current_frame: 184,
+    tstate_native_thread_id: 200,
+    frame_previous: 232,
+    frame_executable: 240,
+    frame_instr_ptr: 248,
+    code_filename: 280,
+    code_name: 288,
+    code_linetable: 304,
+    code_firstlineno: 312,
+    code_code_adaptive: 344,
+};
+
+#[cfg(target_os = "linux")]
+fn read_debug_offsets(pid: i32, runtime_addr: usize, minor: u32) -> std::io::Result<DebugOffsets> {
     let blob = read_mem(pid, runtime_addr, 512)?;
     if blob.len() < 360 || &blob[0..8] != b"xdebugpy" {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "_Py_DebugOffsets cookie not found (Python < 3.12?)",
+            "_Py_DebugOffsets cookie not found (Python < 3.13 has no remote-debug offsets)",
         ));
     }
+    // 3.13 introduced _Py_DebugOffsets; 3.14 reshaped the sub-structs. Newer
+    // versions default to the 3.14 layout (revalidate when 3.15 ships).
+    let p = if minor <= 13 { &POS_313 } else { &POS_314 };
     let g = |pos: usize| u64::from_le_bytes(blob[pos..pos + 8].try_into().unwrap()) as usize;
     Ok(DebugOffsets {
-        interp_head: g(40),
-        interp_next: g(64),
-        threads_head: g(72),
-        tstate_next: g(192),
-        tstate_current_frame: g(208),
-        tstate_native_thread_id: g(224),
-        frame_previous: g(256),
-        frame_executable: g(264),
-        frame_instr_ptr: g(272),
-        code_filename: g(320),
-        code_name: g(328),
-        code_linetable: g(344),
-        code_firstlineno: g(352),
-        code_code_adaptive: g(384),
+        interp_head: g(p.interp_head),
+        interp_next: g(p.interp_next),
+        threads_head: g(p.threads_head),
+        tstate_next: g(p.tstate_next),
+        tstate_current_frame: g(p.tstate_current_frame),
+        tstate_native_thread_id: g(p.tstate_native_thread_id),
+        frame_previous: g(p.frame_previous),
+        frame_executable: g(p.frame_executable),
+        frame_instr_ptr: g(p.frame_instr_ptr),
+        code_filename: g(p.code_filename),
+        code_name: g(p.code_name),
+        code_linetable: g(p.code_linetable),
+        code_firstlineno: g(p.code_firstlineno),
+        code_code_adaptive: g(p.code_code_adaptive),
     })
 }
 
@@ -526,7 +595,8 @@ fn read_thread_state(pid: i32, tid: usize) -> char {
 #[cfg(target_os = "linux")]
 pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, Vec<String>)>> {
     let details = interpreter_details(pid)?;
-    let off = read_debug_offsets(pid, details.py_runtime_addr)?;
+    let minor = (details.version_hex >> 16) & 0xff;
+    let off = read_debug_offsets(pid, details.py_runtime_addr, minor)?;
 
     let mut stacks = Vec::new();
     let mut interp = read_ptr(pid, details.py_runtime_addr + off.interp_head)?;

@@ -321,11 +321,21 @@ rabbitinspect perf run myscript.py --out report.html
 
 # Also export an interactive flamegraph for https://speedscope.app
 rabbitinspect perf run myscript.py --speedscope profile.speedscope.json
+
+# Attach to an already-running process — no code changes, no restart (Linux)
+rabbitinspect perf attach --pid 12345 --duration 5 --out report.html
+
+# Compare two runs (before / after an optimization)
+rabbitinspect perf run myscript.py --json before.json
+# … make your change …
+rabbitinspect perf run myscript.py --json after.json
+rabbitinspect perf diff before.json after.json --out diff.html
 ```
 
 The report includes:
 
-- **Top functions** by self/total time, and a **memory-over-time** chart.
+- **Top functions** by self/total time, an **inline flamegraph**, and a **memory-over-time** chart.
+- **On-CPU vs off-CPU** split (attach mode): how much self time was real CPU work vs waiting on sleep / I/O / locks.
 - **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).
 - **Database** section: slowest queries and **N+1 detection** (repeated query shapes within one request).
 - **Hotspots with lint findings**: the hottest functions cross-referenced against rabbitinspect's own static rules — the static perf rules pointed straight at the code that dominates runtime.
@@ -358,7 +368,7 @@ with query_timer('SELECT ...'):  # generic
     cursor.execute('SELECT ...')
 ```
 
-> Timings are **statistical** (sampling), not exact per-call. Per-function memory and attach-to-an-already-running-process are on the roadmap.
+> Timings are **statistical** (sampling), not exact per-call. Attach mode is Linux-only and supports CPython 3.13+ (validated on 3.13 and 3.14; 3.11/3.12 predate CPython's remote-debug offsets). Per-function memory attribution is on the roadmap.
 
 ---
 

@@ -115,3 +115,44 @@ def test_end_to_end_profile_and_report(tmp_path):
     ss = to_speedscope(result)
     assert ss['profiles'][0]['samples']
     assert ss['shared']['frames']
+
+
+def test_profile_json_roundtrip_and_diff(tmp_path):
+    from rabbitinspect.perf import diff_profiles, load_profile_json, save_profile_json
+
+    script = tmp_path / 'demo.py'
+    script.write_text(_DEMO)
+    result = profile_script(str(script), interval_ms=1.0)
+
+    path = tmp_path / 'profile.json'
+    save_profile_json(result, str(path))
+    loaded = load_profile_json(str(path))
+
+    assert loaded.duration_ms == pytest.approx(result.duration_ms)
+    assert loaded.sample_count == result.sample_count
+    assert {f.name for f in loaded.functions} == {f.name for f in result.functions}
+    # diffing a profile against itself yields no net change
+    deltas = diff_profiles(loaded, loaded)
+    assert all(d.delta_ms == 0.0 for d in deltas)
+
+
+def test_perf_diff_cli(tmp_path):
+    from rabbitinspect.perf import run_perf_cli
+
+    script = tmp_path / 'demo.py'
+    script.write_text(_DEMO)
+    before = tmp_path / 'a.json'
+    after = tmp_path / 'b.json'
+    rc = run_perf_cli(['run', '--out', str(tmp_path / 'a.html'),
+                       '--json', str(before), '--interval', '1', str(script)])
+    assert rc == 0
+    rc = run_perf_cli(['run', '--out', str(tmp_path / 'b.html'),
+                       '--json', str(after), '--interval', '1', str(script)])
+    assert rc == 0
+
+    diff_html = tmp_path / 'diff.html'
+    rc = run_perf_cli(['diff', str(before), str(after), '--out', str(diff_html)])
+    assert rc == 0
+    text = diff_html.read_text()
+    assert 'Before' in text and 'After' in text
+    assert 'hot' in text

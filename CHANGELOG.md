@@ -55,6 +55,11 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 - **Speedscope export**: `rabbitinspect perf run … --speedscope profile.json`
   writes a [speedscope](https://speedscope.app) file for an interactive
   flamegraph / time-order view (`perf.to_speedscope`).
+- **Profile diff**: `rabbitinspect perf run … --json profile.json` persists a
+  profile, and `rabbitinspect perf diff before.json after.json --out diff.html`
+  renders a per-function before/after comparison (Δ ms / Δ %, regressions in red,
+  improvements in green). API: `perf.diff_profiles` / `render_diff_html` /
+  `save_profile_json` / `load_profile_json`.
 - **Demo** `examples/perf_demo.py` and a README "Runtime profiler" section.
 
 ### Added — attach foundation (F4, step 1)
@@ -84,14 +89,25 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   "On-CPU %" card, a per-function "Wait ms" column, and `ProfileResult.on_cpu_ms`
   / `off_cpu_ms` / `FunctionStat.off_cpu_ms`. `attach_sample` now returns
   `{'state', 'frames'}` per thread.
+- **Remote memory timeline**: `perf.sample_remote` now samples the target's
+  resident memory (`/proc/<pid>/status`) alongside stacks, so the memory-over-time
+  chart works for attached processes too — not just in-process runs.
 - **CLI**: `rabbitinspect perf attach --pid <PID> --duration <S> --out report.html`
   samples an already-running server with **no code changes** and writes the same
-  HTML report (top functions, memory n/a, hotspot↔lint cross-reference). Verified
-  end-to-end on CPython 3.14 by recovering a known call stack.
+  HTML report (top functions, memory timeline, on/off-CPU, flamegraph,
+  hotspot↔lint cross-reference). Verified end-to-end on CPython 3.14 by
+  recovering a known call stack.
+
+- **Cross-version attach**: the `_Py_DebugOffsets` field positions are now
+  selected per interpreter version (3.13 and 3.14 sub-struct layouts differ).
+  Sampling is **validated on CPython 3.13 and 3.14**; 3.11/3.12 predate the
+  remote-debug offsets and fail with a clear message (version detection still
+  works). Covered by `test_attach_across_python_versions`, which exercises every
+  CPython found on PATH.
 
 Notes: timings are statistical (sampling), not exact per-call. Remote attach is
-Linux-only and currently supports CPython 3.12+ (validated on 3.14); per-function
-memory and older-CPython attach validation remain on the roadmap.
+Linux-only and supports CPython 3.13+ (validated on 3.13 and 3.14); per-function
+memory attribution remains on the roadmap.
 
 ## [1.1.0] - 2026-06-01
 

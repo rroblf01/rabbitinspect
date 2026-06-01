@@ -90,6 +90,21 @@ class HotspotLint:
 
 
 @dataclass
+class FunctionDelta:
+    name: str
+    file: str
+    before_ms: float
+    after_ms: float
+    delta_ms: float  # after - before; positive == regression (slower)
+
+    @property
+    def delta_pct(self) -> float:
+        if self.before_ms == 0:
+            return 100.0 if self.after_ms > 0 else 0.0
+        return (self.after_ms - self.before_ms) / self.before_ms * 100.0
+
+
+@dataclass
 class ProfileResult:
     duration_ms: float
     sample_count: int
@@ -868,6 +883,138 @@ def to_speedscope(result: ProfileResult, name: str = 'rabbitinspect') -> dict:
     }
 
 
+# ── profile diff (before / after) ─────────────────────────────────────────
+
+
+def diff_profiles(before: ProfileResult, after: ProfileResult) -> list[FunctionDelta]:
+    """Compare per-function self time between two profiles.
+
+    Returns deltas sorted by largest absolute change first — the functions that
+    moved most between (e.g.) before and after an optimization. Positive
+    ``delta_ms`` is a regression (slower), negative is an improvement.
+    """
+    by_key: dict[tuple[str, str], list[float]] = {}
+    for f in before.functions:
+        by_key.setdefault((f.name, f.file), [0.0, 0.0])[0] = f.self_ms
+    for f in after.functions:
+        by_key.setdefault((f.name, f.file), [0.0, 0.0])[1] = f.self_ms
+
+    deltas = [
+        FunctionDelta(
+            name=name,
+            file=file,
+            before_ms=b,
+            after_ms=a,
+            delta_ms=a - b,
+        )
+        for (name, file), (b, a) in by_key.items()
+    ]
+    deltas.sort(key=lambda d: abs(d.delta_ms), reverse=True)
+    return deltas
+
+
+def render_diff_html(
+    before: ProfileResult,
+    after: ProfileResult,
+    title: str = 'rabbitinspect perf diff',
+    limit: int = 100,
+) -> str:
+    """Render a self-contained before/after comparison report."""
+    deltas = diff_profiles(before, after)[:limit]
+    rows = []
+    for d in deltas:
+        if d.delta_ms > 0.05:
+            cls, sign = 'reg', '+'
+        elif d.delta_ms < -0.05:
+            cls, sign = 'imp', ''
+        else:
+            cls, sign = 'flat', ''
+        rows.append(
+            '<tr>'
+            f'<td class="name">{html.escape(d.name)}</td>'
+            f'<td class="file">{html.escape(d.file)}</td>'
+            f'<td class="num">{d.before_ms:.1f}</td>'
+            f'<td class="num">{d.after_ms:.1f}</td>'
+            f'<td class="num {cls}">{sign}{d.delta_ms:.1f}</td>'
+            f'<td class="num {cls}">{sign}{d.delta_pct:.0f}%</td>'
+            '</tr>'
+        )
+    dur_delta = after.duration_ms - before.duration_ms
+    dur_cls = 'reg' if dur_delta > 0 else 'imp'
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{html.escape(title)}</title>
+<style>
+  body {{ font: 14px/1.5 system-ui, sans-serif; margin: 0; color: #222; background: #fafafa; }}
+  header {{ background: #1f2937; color: #fff; padding: 16px 24px; }}
+  header h1 {{ margin: 0; font-size: 18px; }}
+  main {{ padding: 24px; max-width: 1000px; margin: 0 auto; }}
+  .cards {{ display: flex; gap: 16px; margin-bottom: 24px; }}
+  .card {{ background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; min-width: 140px; }}
+  .card .v {{ font-size: 22px; font-weight: 600; }}
+  .card .k {{ color: #6b7280; font-size: 12px; text-transform: uppercase; }}
+  table {{ width: 100%; border-collapse: collapse; background: #fff; }}
+  th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }}
+  th {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
+  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  td.file {{ color: #6b7280; font-size: 12px; }}
+  .reg {{ color: #e03131; font-weight: 600; }}
+  .imp {{ color: #2b8a3e; font-weight: 600; }}
+  .flat {{ color: #9ca3af; }}
+</style>
+</head>
+<body>
+<header><h1>{html.escape(title)}</h1></header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="v">{before.duration_ms:.0f} ms</div><div class="k">Before</div></div>
+    <div class="card"><div class="v">{after.duration_ms:.0f} ms</div><div class="k">After</div></div>
+    <div class="card"><div class="v {dur_cls}">{dur_delta:+.0f} ms</div><div class="k">Total Δ</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Function</th><th>File</th><th class="num">Before ms</th><th class="num">After ms</th><th class="num">Δ ms</th><th class="num">Δ %</th></tr></thead>
+    <tbody>
+    {chr(10).join(rows)}
+    </tbody>
+  </table>
+</main>
+</body>
+</html>
+"""
+
+
+def save_profile_json(result: ProfileResult, path: str) -> None:
+    """Persist the parts of a profile needed to diff it later."""
+    data = {
+        'duration_ms': result.duration_ms,
+        'sample_count': result.sample_count,
+        'on_cpu_ms': result.on_cpu_ms,
+        'off_cpu_ms': result.off_cpu_ms,
+        'functions': [vars(f) for f in result.functions],
+    }
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f)
+
+
+def load_profile_json(path: str) -> ProfileResult:
+    """Load a profile previously written by :func:`save_profile_json`."""
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+    functions = [FunctionStat(**d) for d in data.get('functions', [])]
+    return ProfileResult(
+        duration_ms=float(data.get('duration_ms', 0.0)),
+        sample_count=int(data.get('sample_count', 0)),
+        truncated=False,
+        functions=functions,
+        folded=[],
+        rss=[],
+        on_cpu_ms=float(data.get('on_cpu_ms', 0.0)),
+        off_cpu_ms=float(data.get('off_cpu_ms', 0.0)),
+    )
+
+
 # ── Launcher ────────────────────────────────────────────────────────────────
 
 
@@ -894,11 +1041,25 @@ def profile_script(
     return prof.result
 
 
+def _read_remote_rss(pid: int) -> float | None:
+    """Resident set size (bytes) of a remote pid from ``/proc/<pid>/status``."""
+    try:
+        with open(f'/proc/{pid}/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return float(line.split()[1]) * 1024.0  # kB → bytes
+    except OSError:
+        return None
+    return None
+
+
 def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) -> ProfileResult:
     """Sample an already-running process for ``duration_s`` and aggregate it.
 
     Reads the target's stacks out-of-process via :func:`_core.attach_sample`
     (no code changes in the target) and reuses the normal aggregation/report.
+    Also samples the target's resident memory so the report's memory-over-time
+    chart works for attached processes too.
     """
     import time
 
@@ -907,6 +1068,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
     stacks: list[list[int]] = []
     sample_ts: list[float] = []
     states: list[str] = []
+    rss: list[tuple[float, float]] = []
 
     def intern(entry: str) -> int:
         idx = frame_index.get(entry)
@@ -927,6 +1089,9 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
             stacks.append([intern(e) for e in thread['frames']])
             sample_ts.append(now)
             states.append(thread.get('state', 'R'))
+        rss_bytes = _read_remote_rss(pid)
+        if rss_bytes is not None:
+            rss.append((now, rss_bytes))
         time.sleep(interval_ms / 1000.0)
 
     raw = {
@@ -935,7 +1100,7 @@ def sample_remote(pid: int, duration_s: float = 3.0, interval_ms: float = 10.0) 
         'ts': sample_ts,
         'tids': [],
         'states': states,
-        'rss': [],
+        'rss': rss,
         'spans': [],
         'queries': [],
         'duration_ms': (time.perf_counter() - start) * 1000.0,
@@ -995,6 +1160,7 @@ def run_perf_cli(argv: list[str]) -> int:
     runp = sub.add_parser('run', help='Run a Python script under the profiler')
     runp.add_argument('--out', default='rabbitinspect-perf.html', help='HTML report output path')
     runp.add_argument('--speedscope', metavar='PATH', help='Also write a speedscope JSON profile')
+    runp.add_argument('--json', metavar='PATH', dest='json_out', help='Also write a profile JSON for `perf diff`')
     runp.add_argument('--interval', type=float, default=5.0, help='Sampling interval in ms')
     runp.add_argument('--max-depth', type=int, default=256, help='Maximum stack depth to walk')
     runp.add_argument('script', help='Python script to profile')
@@ -1006,9 +1172,26 @@ def run_perf_cli(argv: list[str]) -> int:
     attachp.add_argument('--out', default='rabbitinspect-perf.html', help='HTML report output path')
     attachp.add_argument('--interval', type=float, default=10.0, help='Sampling interval in ms')
 
+    diffp = sub.add_parser('diff', help='Compare two profile JSONs and write an HTML diff')
+    diffp.add_argument('before', help='Baseline profile JSON (from `perf run --json`)')
+    diffp.add_argument('after', help='New profile JSON')
+    diffp.add_argument('--out', default='rabbitinspect-perf-diff.html', help='HTML diff output path')
+
     args = parser.parse_args(argv)
     if args.cmd == 'attach':
         return _attach_cli(args.pid, args.duration, args.out, args.interval)
+    if args.cmd == 'diff':
+        before = load_profile_json(args.before)
+        after = load_profile_json(args.after)
+        with open(args.out, 'w', encoding='utf-8') as f:
+            f.write(render_diff_html(before, after))
+        deltas = diff_profiles(before, after)
+        if deltas:
+            top = deltas[0]
+            verb = 'slower' if top.delta_ms > 0 else 'faster'
+            print(f'Biggest change: {top.name} {abs(top.delta_ms):.1f} ms {verb}', file=sys.stderr)
+        print(f'Diff written to {args.out}', file=sys.stderr)
+        return 0
     if args.cmd == 'run':
         result = profile_script(
             args.script,
@@ -1024,6 +1207,9 @@ def run_perf_cli(argv: list[str]) -> int:
             with open(args.speedscope, 'w', encoding='utf-8') as f:
                 _json.dump(to_speedscope(result), f)
             print(f'Speedscope profile written to {args.speedscope}', file=sys.stderr)
+        if args.json_out:
+            save_profile_json(result, args.json_out)
+            print(f'Profile JSON written to {args.json_out}', file=sys.stderr)
         peak_mb = result.peak_rss_bytes / (1024 * 1024)
         print(
             f'Profiled {args.script}: {result.duration_ms:.0f} ms, '

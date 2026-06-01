@@ -267,6 +267,55 @@ def test_flamegraph_escapes_names():
     assert '&lt;script&gt;x' in svg
 
 
+def test_diff_profiles_orders_by_change():
+    from rabbitinspect.perf import diff_profiles
+
+    before = ProfileResult(
+        100.0, 10, False,
+        [FunctionStat('a', 'x.py', 100.0, 100.0, 0, 0), FunctionStat('b', 'x.py', 50.0, 50.0, 0, 0)],
+        [], [],
+    )
+    after = ProfileResult(
+        70.0, 10, False,
+        [FunctionStat('a', 'x.py', 40.0, 40.0, 0, 0),
+         FunctionStat('b', 'x.py', 50.0, 50.0, 0, 0),
+         FunctionStat('c', 'x.py', 30.0, 30.0, 0, 0)],
+        [], [],
+    )
+    deltas = diff_profiles(before, after)
+    by = {d.name: d for d in deltas}
+    # 'a' improved most (-60), then 'c' is new (+30), 'b' unchanged (0).
+    assert [d.name for d in deltas] == ['a', 'c', 'b']
+    assert by['a'].delta_ms == pytest.approx(-60.0)
+    assert by['a'].delta_pct == pytest.approx(-60.0)
+    assert by['c'].before_ms == 0.0
+    assert by['c'].delta_ms == pytest.approx(30.0)
+    assert by['c'].delta_pct == pytest.approx(100.0)
+    assert by['b'].delta_ms == pytest.approx(0.0)
+
+
+def test_render_diff_html():
+    from rabbitinspect.perf import render_diff_html
+
+    before = ProfileResult(100.0, 10, False, [FunctionStat('slow', 'x.py', 100.0, 100.0, 0, 0)], [], [])
+    after = ProfileResult(40.0, 10, False, [FunctionStat('slow', 'x.py', 40.0, 40.0, 0, 0)], [], [])
+    html_out = render_diff_html(before, after)
+    assert 'Before' in html_out and 'After' in html_out
+    assert 'slow' in html_out
+    assert 'imp' in html_out  # improvement class for the -60 ms change
+    assert '-60.0' in html_out
+    assert '-60 ms' in html_out  # total duration delta card
+
+
+def test_render_diff_html_escapes():
+    from rabbitinspect.perf import render_diff_html
+
+    r = ProfileResult(1.0, 1, False, [FunctionStat('<script>', 'a.py', 1.0, 1.0, 0, 0)], [], [])
+    out = render_diff_html(r, r)
+    assert '<script>' not in out
+    assert '&lt;script&gt;' in out
+
+
 def test_render_html_truncated_warning():
     r = _synthetic_result()
     r.truncated = True
