@@ -697,7 +697,7 @@ _FUNC_THEAD = (
 def _func_rows(functions: list[FunctionStat], limit: int = 100, app_root: str | None = None) -> str:
     rows = []
     src_cache: dict[str, list[str] | None] = {}
-    root = os.path.realpath(app_root) if app_root else None
+    root = os.path.abspath(app_root) if app_root else None
     for f in functions[:limit]:
         bar = min(100.0, f.self_pct)
         has_detail = bool(f.line_times)
@@ -777,7 +777,7 @@ def _heuristic_app(file: str) -> bool:
 def _app_functions_section(functions: list[FunctionStat], app_root: str | None) -> str:
     if not app_root:
         return ''
-    root = os.path.realpath(app_root)
+    root = os.path.abspath(app_root)
     app = [f for f in functions if _is_app_frame(f.file, root)]
     if not app:
         return (
@@ -945,7 +945,7 @@ def _hotspot_lints_section(result: ProfileResult, app_root: str | None = None) -
     hotspots = result.hotspot_lints
     if app_root:
         # Linting stdlib / dependencies is noise — restrict to the user's code.
-        root = os.path.realpath(app_root)
+        root = os.path.abspath(app_root)
         hotspots = [h for h in hotspots if _is_app_frame(h.file, root)]
     if not hotspots:
         return ''
@@ -1350,7 +1350,7 @@ def render_html(
 
     # Sticky section nav — only link sections that actually render.
     app_present = bool(app_root) and any(
-        _is_app_frame(f.file, os.path.realpath(app_root)) for f in result.functions
+        _is_app_frame(f.file, os.path.abspath(app_root)) for f in result.functions
     )
     nav_items = [
         ('s-mem', 'Memory', True),

@@ -379,6 +379,45 @@ def test_heuristic_app_classification():
     assert _heuristic_app('') is False
 
 
+def test_app_root_filter_survives_realpath_divergence():
+    """On macOS, os.path.realpath resolves the /home autofs symlink (→
+    /System/Volumes/Data/home/...), but sampled frame files are compared raw.
+    The app-root match must use abspath (no symlink resolution) so it still works.
+    Regression for the macOS CI failure."""
+    import os
+    from unittest import mock
+
+    from rabbitinspect.perf import FunctionStat, HotspotLint, ProfileResult, render_html
+
+    real_realpath = os.path.realpath
+
+    def fake_realpath(p):
+        if isinstance(p, str) and p.startswith('/home'):
+            return '/System/Volumes/Data' + p
+        return real_realpath(p)
+
+    funcs = ProfileResult(
+        100.0, 10, False,
+        [FunctionStat('readinto', '/usr/lib/python3.14/socket.py', 60, 60, 60, 60),
+         FunctionStat('get', '/home/me/proj/app/views.py', 5, 5, 0, 5)],
+        [], [],
+    )
+    hot = ProfileResult(
+        100.0, 10, False, [], [], [],
+        hotspot_lints=[
+            HotspotLint('myview', '/home/me/proj/app/views.py', 50,
+                        [{'code': 'RAB001', 'line': 3, 'message': 'x'}]),
+            HotspotLint('inner', '/home/me/proj/.venv/lib/python3.14/site-packages/d/x.py', 30,
+                        [{'code': 'RAB003', 'line': 1, 'message': 'z'}]),
+        ],
+    )
+    with mock.patch('os.path.realpath', side_effect=fake_realpath):
+        h1 = render_html(funcs, app_root='/home/me/proj')
+        h2 = render_html(hot, app_root='/home/me/proj')
+    assert 'Top application functions' in h1 and 'get' in h1
+    assert 'myview' in h2 and 'inner' not in h2
+
+
 def test_save_load_diff_self_zero_delta(tmp_path):
     from rabbitinspect.perf import diff_profiles, profile_script
 
