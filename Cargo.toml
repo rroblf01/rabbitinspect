@@ -2,6 +2,10 @@
 name = "rabbitinspect"
 version = "2.0.0"
 edition = "2021"
+description = "Python performance toolkit — static perf/correctness lints plus a sampling runtime profiler (PyO3 extension)"
+license = "MIT"
+repository = "https://github.com/rroblf01/rabbitinspect"
+publish = false
 
 [lib]
 name = "rabbitinspect"

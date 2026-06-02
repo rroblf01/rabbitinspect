@@ -2,9 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] — 2.0 (in progress)
+## [2.0.0] — 2026-06-02
 
-Toward a Python **performance toolkit**: static lints plus a runtime profiler.
+A Python **performance toolkit**: static lints plus a sampling runtime profiler.
 
 ### Added — profiler power-ups & report UX
 
@@ -34,6 +34,23 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 - **Report UX** — function search/filter box, dark-mode toggle, and a one-click
   **functions.csv** download in the HTML report; `export_functions_csv` / CLI
   `perf run --csv`.
+
+### Fixed — release hardening
+
+- **WSGI streaming/timing** — the middleware recorded the request span the instant
+  the app returned its (lazy) body iterable, so streaming/generator responses were
+  timed at ~0 ms and their status came back as `0`. The body is now wrapped so the
+  span is recorded when the server finishes consuming it (or closes it early), and
+  the underlying `close()` is forwarded for response cleanup.
+- **Sampler memory leak** — `perf_start` used to `Box::leak` a full sample buffer
+  on every start, leaking it permanently; repeated `with Profiler()` blocks, the
+  signal-dump pattern, and fork profiling all grew memory without bound. Buffers
+  are now `Arc`-owned and freed when the run ends.
+- **`perf diff` robustness** — missing, malformed, or non-object profile JSON now
+  produces a clean error and exit code `1` instead of a traceback;
+  `load_profile_json` tolerates unknown `FunctionStat` fields (version skew).
+- **`Profiler(trace_memory=True)`** no longer leaves `tracemalloc` running if the
+  sampler refuses to start, and never stops `tracemalloc` it did not itself start.
 
 Deferred (roadmap): macOS/Windows attach (needs `mach_vm_read` / Windows APIs —
 not validated yet) and a GIL-contention metric (needs interpreter-level
