@@ -9,7 +9,7 @@ from collections.abc import Callable
 try:
     import tomllib
 except ModuleNotFoundError:
-    import tomli as tomllib  # Python 3.10 fallback
+    import tomli as tomllib  # ty: ignore[unresolved-import]  # Python 3.10 fallback (optional dep)
 
 try:
     from importlib.metadata import version as _pkg_version

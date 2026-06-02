@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rabbitinspect"
-version = "2.0.0.dev0"
+version = "2.0.0"
 description = "Python code performance toolkit written in Rust — static perf/correctness lints plus a sampling runtime profiler"
 readme = "README.md"
 authors = [

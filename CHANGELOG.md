@@ -66,6 +66,11 @@ Toward a Python **performance toolkit**: static lints plus a runtime profiler.
   records live allocations via `tracemalloc` at stop and attributes each to its
   function (AST line ranges), shown as a "Top allocations by size" table.
   `ProfileResult.mem_allocations` / `MemAlloc`.
+- **Fork-safe `enable_fork_profiling`**: now stops the sampler *before* each fork
+  (so the fork happens single-threaded) and restarts it in both parent and child,
+  instead of only restarting in the child. Removes the "fork() in a multi-threaded
+  process may deadlock" hazard — a sampler thread holding a lock at the fork
+  instant could otherwise wedge the child — and the matching DeprecationWarning.
 - **Per-line breakdown inside a function**: click any function row in the report
   to expand a line-by-line self-time table (line number, ms, bar, and the actual
   source text), built by attributing each leaf sample to its source line. For a

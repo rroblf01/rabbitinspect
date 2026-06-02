@@ -98,21 +98,45 @@ class ASGIProfilerMiddleware:
 def enable_fork_profiling(interval_ms: float = 5.0, max_depth: int = 256) -> None:
     """Keep the sampler running across forked worker processes.
 
-    Threads do not survive ``fork()``, so a worker inherits a dead sampler. This
-    registers an ``after_in_child`` hook that starts a fresh sampler in each new
-    worker. Call it once in the parent before workers are forked.
+    Threads do not survive ``fork()``, so a worker would inherit a dead sampler.
+    We also stop the sampler *before* each fork so the fork happens while the
+    process is single-threaded — this sidesteps the "fork() in a multi-threaded
+    process may deadlock" hazard (a sampler thread holding a lock at the fork
+    instant could leave the child stuck) and the matching DeprecationWarning.
+    The sampler is then restarted in both the parent and each child. Call once in
+    the parent before workers are forked.
+
+    Note: stopping around the fork drops the parent's samples accumulated so far;
+    in the usual case (gunicorn/uvicorn fork workers at startup) there is nothing
+    to lose yet.
     """
     import os
 
-    def _restart_in_child():
-        # The inherited sampler's thread is gone; force a clean restart with a
-        # fresh buffer for this worker (only if the parent was profiling).
-        if not _core.perf_running():
-            return
-        try:
-            _core.perf_reset()
-            _core.perf_start(interval_ms, max_depth)
-        except Exception:
-            pass
+    was_running = [False]
 
-    os.register_at_fork(after_in_child=_restart_in_child)
+    def _before():
+        # Pause the sampler so the fork is single-threaded (join the thread).
+        was_running[0] = _core.perf_running()
+        if was_running[0]:
+            try:
+                _core.perf_stop()
+            except Exception:
+                pass
+
+    def _after_parent():
+        if was_running[0]:
+            try:
+                _core.perf_start(interval_ms, max_depth)
+            except Exception:
+                pass
+
+    def _after_child():
+        # Fresh sampler + buffer for this worker (only if the parent was profiling).
+        if was_running[0]:
+            try:
+                _core.perf_reset()
+                _core.perf_start(interval_ms, max_depth)
+            except Exception:
+                pass
+
+    os.register_at_fork(before=_before, after_in_parent=_after_parent, after_in_child=_after_child)
