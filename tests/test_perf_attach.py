@@ -231,3 +231,25 @@ def test_sample_remote_aggregates(tmp_path):
     finally:
         child.terminate()
         child.wait(timeout=5)
+
+
+def test_sample_remote_multi(tmp_path):
+    from rabbitinspect.perf import sample_remote_multi
+
+    c1 = _spawn_target(tmp_path)
+    # second target from a different dir so both run the sleeping stack
+    d2 = tmp_path / 'w2'
+    d2.mkdir()
+    c2 = _spawn_target(d2)
+    try:
+        result = sample_remote_multi([c1.pid, c2.pid], duration_s=0.6, interval_ms=5.0)
+        if result.sample_count == 0:
+            pytest.skip('remote sampling blocked (ptrace_scope / unsupported version)')
+        names = {f.name for f in result.functions}
+        assert {'leaf', 'middle', 'outer'} <= names
+        # threads from the two workers are kept distinct
+        assert len(set(result.raw.get('tids', []))) >= 2
+    finally:
+        for c in (c1, c2):
+            c.terminate()
+            c.wait(timeout=5)

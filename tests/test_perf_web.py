@@ -217,3 +217,22 @@ def test_fork_restarts_sampler_in_child():
     finally:
         if _core.perf_running():
             _core.perf_stop()
+
+
+def test_wsgi_slow_request_dump(tmp_path):
+    dump_dir = tmp_path / 'slow'
+
+    def app(environ, start_response):
+        start_response('200 OK', [('Content-Type', 'text/plain')])
+        return [b'ok']
+
+    mw = WSGIProfilerMiddleware(app, slow_request_ms=0.0, dump_dir=str(dump_dir))
+    _core.perf_start(5.0, 64)
+    try:
+        env = {'REQUEST_METHOD': 'GET', 'PATH_INFO': '/slow'}
+        list(mw(env, lambda *a, **k: None))
+    finally:
+        _core.perf_stop()
+    dumps = list(dump_dir.glob('slow-*.html')) if dump_dir.exists() else []
+    assert dumps, 'no slow-request report written'
+    assert 'functions by self time' in dumps[0].read_text()

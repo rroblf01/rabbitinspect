@@ -6,6 +6,39 @@ All notable changes to this project will be documented in this file.
 
 Toward a Python **performance toolkit**: static lints plus a runtime profiler.
 
+### Added — profiler power-ups & report UX
+
+- **Exact per-line tracing** — `@line_profile` decorator times every line of a
+  function via `sys.settrace` (callee time rolls up to the call site), for the
+  microsecond lines the sampler can't catch. `line_profile_result` /
+  `line_profile_html`. Opt-in (high overhead, one function at a time).
+- **On-demand dump** — `perf_snapshot()` (Rust) reads the current samples without
+  stopping; `install_dump_handler()` writes an HTML report on `SIGUSR1`, so a
+  long-running server can be dumped live (`kill -USR1 <pid>`).
+- **Per-endpoint flamegraphs** — a flamegraph per route, built from the samples
+  taken while that endpoint was serving (correlates request spans with stacks).
+- **Slow-request capture** — the WSGI/ASGI middleware can auto-write a report for
+  any request slower than `slow_request_ms` (snapshot, keeps sampling).
+- **SQL query origin** — each recorded query now carries the `file:line` of the
+  application code that issued it (shown in the Database section); makes N+1
+  sources obvious. `Query.origin`.
+- **Multi-worker attach** — `sample_remote_multi([pids…])` / `perf attach --also-pid`
+  samples several forked workers at once and merges them (threads kept distinct
+  per worker, RSS summed).
+- **Faster remote attach** — the interpreter resolution (parse /proc/maps, ELF
+  symbols, `_Py_DebugOffsets`) is now cached per pid instead of redone every
+  snapshot, so remote sampling collects far more samples/sec. `attach_forget`.
+- **Differential flamegraph** in `perf diff` — the after-profile colored by change
+  vs before (red = slower, green = faster); folded stacks are now persisted in the
+  profile JSON to enable it.
+- **Report UX** — function search/filter box, dark-mode toggle, and a one-click
+  **functions.csv** download in the HTML report; `export_functions_csv` / CLI
+  `perf run --csv`.
+
+Deferred (roadmap): macOS/Windows attach (needs `mach_vm_read` / Windows APIs —
+not validated yet) and a GIL-contention metric (needs interpreter-level
+instrumentation to be meaningful).
+
 ### Added — runtime profiler (F1 spike)
 
 - **Sampling profiler core (Rust)**: a background thread snapshots every Python

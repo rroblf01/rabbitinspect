@@ -194,3 +194,24 @@ def test_hotspot_section_in_html(tmp_path):
     html = render_html(result)
     assert 'Hotspots with lint findings' in html
     assert 'RAB002' in html
+
+
+def test_query_origin_captured():
+    # record_query should attribute the query to the calling app line.
+    _core.perf_start(1000.0, 64)  # huge interval: effectively no CPU samples
+    try:
+        def issue_query():
+            record_query('SELECT 1', 1.0)  # this line is the origin
+
+        issue_query()
+        raw = _core.perf_stop()
+    finally:
+        if _core.perf_running():
+            _core.perf_stop()
+    result = aggregate(raw)
+    assert result.queries
+    origin = result.queries[0].origin
+    assert 'test_perf_db.py' in origin and ':' in origin
+    # origin shows in the DB section
+    html = render_html(result)
+    assert 'Origin' in html

@@ -328,11 +328,17 @@ rabbitinspect perf attach --pid 12345 --duration 5 --out report.html
 # ...and cut through framework/idle noise — show only your own code
 rabbitinspect perf attach --pid 12345 --duration 5 --app-root /path/to/project --out report.html
 
-# Compare two runs (before / after an optimization)
+# Compare two runs (before / after an optimization) — diff has a differential flamegraph
 rabbitinspect perf run myscript.py --json before.json
 # … make your change …
 rabbitinspect perf run myscript.py --json after.json
 rabbitinspect perf diff before.json after.json --out diff.html
+
+# Other run outputs: per-function CSV, speedscope JSON
+rabbitinspect perf run myscript.py --csv functions.csv --speedscope profile.json
+
+# Sample several forked workers at once (gunicorn) and merge them
+rabbitinspect perf attach --pid 12345 --also-pid 12346 --also-pid 12347 --duration 10 --out report.html
 ```
 
 The report includes:
@@ -342,9 +348,39 @@ The report includes:
 - **Per-line breakdown**: click a function in the report to expand its self-time line by line, with the source text — pinpoints which statement spent the time.
 - **Per-function memory** (`perf run --memory`): live allocations attributed to functions via `tracemalloc`.
 - **On-CPU vs off-CPU** split (attach mode): how much self time was real CPU work vs waiting on sleep / I/O / locks.
-- **Request timeline** + per-endpoint **p50/p95/p99** (when web middleware is installed).
-- **Database** section: slowest queries and **N+1 detection** (repeated query shapes within one request).
+- **Per-endpoint flamegraphs**: a flamegraph per route, from the samples taken while that endpoint was serving (web middleware installed).
+- **Request timeline** + per-endpoint **p50/p95/p99**.
+- **Database** section: slowest queries with the **app line that issued each query**, and **N+1 detection** (repeated query shapes within one request).
 - **Hotspots with lint findings**: the hottest functions cross-referenced against rabbitinspect's own static rules — the static perf rules pointed straight at the code that dominates runtime.
+- **Report UX**: a function **search box**, a **dark-mode** toggle, and a one-click **functions.csv** download.
+
+### Exact per-line timing (`@line_profile`)
+
+The sampler can't see lines that run in microseconds. For a function you can edit, `@line_profile` times **every** line exactly via tracing (high overhead — opt-in):
+
+```python
+from rabbitinspect.perf import line_profile, line_profile_html
+
+@line_profile
+def handler(req):
+    rows = db.query(...)        # time on this line includes the call it makes
+    return render(rows)
+
+handler(req)
+open('lines.html', 'w').write(line_profile_html(handler))
+```
+
+### Dump a running process on demand
+
+Profile a long-running server and grab a report whenever you want — no stop, no restart:
+
+```python
+from rabbitinspect.perf import install_dump_handler
+install_dump_handler(out='dump.html')   # writes dump.html on SIGUSR1
+```
+```bash
+kill -USR1 <pid>     # → dump.html
+```
 
 ### Async (asyncio)
 
@@ -372,9 +408,12 @@ application = WSGIProfilerMiddleware(application)
 # FastAPI / Starlette
 from rabbitinspect.perf_web import ASGIProfilerMiddleware
 app.add_middleware(ASGIProfilerMiddleware)
+
+# Auto-capture a report for any request slower than 1s:
+application = WSGIProfilerMiddleware(application, slow_request_ms=1000, dump_dir='slow/')
 ```
 
-For forked workers (gunicorn/uvicorn), call `enable_fork_profiling()` in the parent so each worker gets its own live sampler (OS threads don't survive `fork()`).
+For forked workers (gunicorn/uvicorn), call `enable_fork_profiling()` in the parent so each worker gets its own live sampler (OS threads don't survive `fork()`). It stops the sampler around each `fork()` so the fork is single-threaded (no deadlock hazard).
 
 ### Database queries
 
@@ -387,6 +426,8 @@ instrument_django()             # Django (call once at startup)
 with query_timer('SELECT ...'):  # generic
     cursor.execute('SELECT ...')
 ```
+
+Each query is tagged with the **application line that issued it** (`file:line`), so the slowest queries and N+1 groups point straight at your code.
 
 > Timings are **statistical** (sampling), not exact per-call. Attach mode is Linux-only and supports CPython 3.13+ (validated on 3.13 and 3.14; 3.11/3.12 predate CPython's remote-debug offsets). Per-function memory attribution is on the roadmap.
 

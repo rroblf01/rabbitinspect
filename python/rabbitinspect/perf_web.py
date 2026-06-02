@@ -24,6 +24,26 @@ from __future__ import annotations
 from rabbitinspect import _core
 
 
+def _dump_slow(method: str, route: str, duration_ms: float, dump_dir: str) -> None:
+    """Write an HTML report for a slow request (snapshot, no stop)."""
+    import os
+    import re
+    import time
+
+    from rabbitinspect.perf import aggregate, analyze_hotspots
+
+    try:
+        result = aggregate(_core.perf_snapshot())
+        analyze_hotspots(result)
+        os.makedirs(dump_dir, exist_ok=True)
+        slug = re.sub(r'[^A-Za-z0-9]+', '_', f'{method}{route}').strip('_') or 'req'
+        path = os.path.join(dump_dir, f'slow-{slug}-{int(duration_ms)}ms-{int(time.time())}.html')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(result.to_html())
+    except Exception:
+        pass
+
+
 def _status_code(raw: object) -> int:
     if isinstance(raw, int):
         return raw
@@ -37,10 +57,15 @@ def _status_code(raw: object) -> int:
 
 
 class WSGIProfilerMiddleware:
-    """Wrap a WSGI application to record a span per request."""
+    """Wrap a WSGI application to record a span per request.
 
-    def __init__(self, app):
+    ``slow_request_ms`` (with ``dump_dir``): when a request exceeds the threshold,
+    write an HTML report for it (snapshot, profiler keeps running)."""
+
+    def __init__(self, app, slow_request_ms: float | None = None, dump_dir: str = 'rabbitinspect-slow'):
         self.app = app
+        self.slow_request_ms = slow_request_ms
+        self.dump_dir = dump_dir
 
     def __call__(self, environ, start_response):
         if not _core.perf_running():
@@ -54,21 +79,25 @@ class WSGIProfilerMiddleware:
             return start_response(status, headers, exc_info)
 
         result = self.app(environ, _start_response)
-        _core.perf_record_span(
-            environ.get('REQUEST_METHOD', 'GET'),
-            environ.get('PATH_INFO', '/') or '/',
-            captured['status'],
-            start,
-            _core.perf_now_ms(),
-        )
+        end = _core.perf_now_ms()
+        method = environ.get('REQUEST_METHOD', 'GET')
+        route = environ.get('PATH_INFO', '/') or '/'
+        _core.perf_record_span(method, route, captured['status'], start, end)
+        if self.slow_request_ms is not None and (end - start) >= self.slow_request_ms:
+            _dump_slow(method, route, end - start, self.dump_dir)
         return result
 
 
 class ASGIProfilerMiddleware:
-    """Wrap an ASGI application to record a span per HTTP request."""
+    """Wrap an ASGI application to record a span per HTTP request.
 
-    def __init__(self, app):
+    ``slow_request_ms`` (with ``dump_dir``): when a request exceeds the threshold,
+    write an HTML report for it (snapshot, profiler keeps running)."""
+
+    def __init__(self, app, slow_request_ms: float | None = None, dump_dir: str = 'rabbitinspect-slow'):
         self.app = app
+        self.slow_request_ms = slow_request_ms
+        self.dump_dir = dump_dir
 
     async def __call__(self, scope, receive, send):
         if scope.get('type') != 'http' or not _core.perf_running():
@@ -86,13 +115,12 @@ class ASGIProfilerMiddleware:
         try:
             await self.app(scope, receive, _send)
         finally:
-            _core.perf_record_span(
-                scope.get('method', 'GET'),
-                scope.get('path', '/') or '/',
-                captured['status'],
-                start,
-                _core.perf_now_ms(),
-            )
+            end = _core.perf_now_ms()
+            method = scope.get('method', 'GET')
+            route = scope.get('path', '/') or '/'
+            _core.perf_record_span(method, route, captured['status'], start, end)
+            if self.slow_request_ms is not None and (end - start) >= self.slow_request_ms:
+                _dump_slow(method, route, end - start, self.dump_dir)
 
 
 def enable_fork_profiling(interval_ms: float = 5.0, max_depth: int = 256) -> None:

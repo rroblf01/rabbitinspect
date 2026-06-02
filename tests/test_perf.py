@@ -566,3 +566,134 @@ def test_profile_script(tmp_path):
     assert result.sample_count > 0
     assert any(f.name == 'busy' for f in result.functions)
     assert not _core.perf_running()
+
+
+# ── 2.0 additions: line_profile / snapshot / dump / csv / diff flame / endpoints ──
+
+
+def test_line_profile_exact_per_line():
+    from rabbitinspect.perf import line_profile, line_profile_result
+
+    @line_profile
+    def work(n):
+        total = 0
+        for i in range(n):
+            total += i * i
+        return total
+
+    work(50000)
+    stat = line_profile_result(work)
+    assert stat.line_times  # per-line data captured
+    # the loop body line is hit n times
+    max_hits = max(h for _ln, _ms, h in stat.line_times)
+    assert max_hits >= 50000
+
+
+def test_line_profile_html():
+    from rabbitinspect.perf import line_profile, line_profile_html
+
+    @line_profile
+    def f():
+        x = 0
+        for _ in range(1000):
+            x += 1
+        return x
+
+    f()
+    html_out = line_profile_html(f)
+    assert 'line profile' in html_out.lower()
+    assert 'class="fn"' in html_out  # expandable per-line row
+
+
+def test_perf_snapshot_while_running():
+    _core.perf_start(2.0, 64)
+    try:
+        s = 0
+        for i in range(300000):
+            s += i
+        raw = _core.perf_snapshot()
+        assert _core.perf_running()  # snapshot does NOT stop
+        assert 'stacks' in raw and 'frames' in raw
+    finally:
+        _core.perf_stop()
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='SIGUSR1 dump is POSIX')
+def test_install_dump_handler(tmp_path):
+    import os
+    import signal
+    import time
+
+    from rabbitinspect.perf import install_dump_handler
+
+    out = tmp_path / 'dump.html'
+    prev = install_dump_handler(out=str(out))
+    try:
+        _core.perf_start(2.0, 64)
+        s = 0
+        for i in range(300000):
+            s += i
+        os.kill(os.getpid(), signal.SIGUSR1)
+        time.sleep(0.1)
+        assert _core.perf_running()  # still running after dump
+        assert out.exists()
+        assert 'functions by self time' in out.read_text()
+    finally:
+        if _core.perf_running():
+            _core.perf_stop()
+        signal.signal(signal.SIGUSR1, prev)
+
+
+def test_export_functions_csv(tmp_path):
+    from rabbitinspect.perf import export_functions_csv
+
+    r = ProfileResult(100.0, 10, False, [FunctionStat('f', 'a.py', 50.0, 60.0, 50.0, 60.0, line=3)], [], [])
+    path = tmp_path / 'fns.csv'
+    export_functions_csv(r, str(path))
+    text = path.read_text()
+    assert 'function,file,line,self_ms' in text
+    assert 'f,a.py,3' in text
+
+
+def test_diff_flamegraph_in_diff_html():
+    from rabbitinspect.perf import render_diff_html
+
+    before = ProfileResult(100.0, 10, False, [], [('main;slow', 80), ('main', 20)], [])
+    after = ProfileResult(60.0, 10, False, [], [('main;slow', 30), ('main', 30)], [])
+    html_out = render_diff_html(before, after)
+    assert 'Differential flamegraph' in html_out
+    assert 'class="chart flame"' in html_out
+    assert 'querySelectorAll("svg.flame")' in html_out
+
+
+def test_report_toolbar_search_dark_csv():
+    r = aggregate({
+        'frames': ['f\ta.py\t1'], 'stacks': [[0]], 'ts': [0.0], 'tids': [1],
+        'rss': [], 'duration_ms': 10.0, 'sample_count': 1, 'truncated': False,
+    })
+    html_out = r.to_html()
+    assert 'id="fsearch"' in html_out          # search box
+    assert 'rabFilter' in html_out
+    assert "classList.toggle('dark')" in html_out  # dark mode
+    assert 'rabExportCsv' in html_out          # csv download
+
+
+def test_endpoint_flamegraphs():
+    # samples taken during a request window to /v, plus the span itself
+    raw = {
+        'frames': ['view\turls.py\t5', 'wsgi\tx.py\t1'],
+        'stacks': [[0, 1], [0, 1], [0, 1]],
+        'ts': [1.0, 2.0, 3.0],
+        'tids': [1, 1, 1],
+        'states': ['R', 'R', 'R'],
+        'rss': [],
+        'spans': [{'method': 'GET', 'route': '/v', 'status': 200, 'start_ms': 0.0, 'end_ms': 5.0}],
+        'queries': [],
+        'duration_ms': 5.0,
+        'sample_count': 3,
+        'truncated': False,
+    }
+    result = aggregate(raw)
+    html_out = result.to_html()
+    assert 'Per-endpoint flamegraphs' in html_out
+    assert 'GET /v' in html_out

@@ -32,6 +32,7 @@ struct Query {
     ts_ms: f64,
     sql: String,
     duration_ms: f64,
+    origin: String, // "file:line" of the app code that issued the query ("" if unknown)
 }
 
 struct Samples {
@@ -211,6 +212,12 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
     }
 
     let s = sampler.shared.lock().unwrap();
+    samples_to_dict(py, &s)
+}
+
+/// Build the raw `{frames, stacks, ts, tids, rss, spans, queries, ...}` dict from
+/// a `Samples`. Shared by `perf_stop` (after joining) and `perf_snapshot` (live).
+fn samples_to_dict(py: Python<'_>, s: &Samples) -> PyResult<Py<PyAny>> {
     let duration_ms = s.start.elapsed().as_secs_f64() * 1000.0;
 
     let frames = PyList::new(py, &s.frame_table)?;
@@ -240,6 +247,7 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
         d.set_item("ts_ms", q.ts_ms)?;
         d.set_item("sql", &q.sql)?;
         d.set_item("duration_ms", q.duration_ms)?;
+        d.set_item("origin", &q.origin)?;
         queries.append(d)?;
     }
 
@@ -255,6 +263,20 @@ pub fn perf_stop(py: Python<'_>) -> PyResult<Py<PyAny>> {
     out.set_item("sample_count", s.stacks.len())?;
     out.set_item("truncated", s.truncated)?;
     Ok(out.into_any().unbind())
+}
+
+/// Snapshot the current samples WITHOUT stopping the profiler. Lets a long-running
+/// process dump a report on demand (e.g. from a signal handler) and keep sampling.
+#[pyfunction]
+pub fn perf_snapshot(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let g = slot().lock().unwrap();
+    match g.as_ref() {
+        Some(sampler) => {
+            let s = sampler.shared.lock().unwrap();
+            samples_to_dict(py, &s)
+        }
+        None => Err(pyo3::exceptions::PyRuntimeError::new_err("profiler is not running")),
+    }
 }
 
 /// Whether a sampler is currently running.
@@ -278,7 +300,8 @@ pub fn perf_reset() {
 /// Record a database query with its duration. No-op when not running. The
 /// timestamp is taken from the sampler clock so queries align with spans.
 #[pyfunction]
-pub fn perf_record_query(sql: String, duration_ms: f64) {
+#[pyo3(signature = (sql, duration_ms, origin=String::new()))]
+pub fn perf_record_query(sql: String, duration_ms: f64, origin: String) {
     let g = slot().lock().unwrap();
     if let Some(s) = g.as_ref() {
         let mut sh = s.shared.lock().unwrap();
@@ -288,6 +311,7 @@ pub fn perf_record_query(sql: String, duration_ms: f64) {
                 ts_ms,
                 sql,
                 duration_ms,
+                origin,
             });
         }
     }

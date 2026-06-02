@@ -313,6 +313,7 @@ pub fn interpreter_details(_pid: i32) -> std::io::Result<()> {
 // 3.11/3.12 predate this block and are unsupported for sampling.
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
 struct DebugOffsets {
     interp_head: usize,
     interp_next: usize,
@@ -592,12 +593,36 @@ fn read_thread_state(pid: i32, tid: usize) -> char {
 
 /// One snapshot of every Python thread in the target: its OS state char plus a
 /// vec of "func\tfile\tline" entries, leaf-first.
+// Resolving the interpreter (parse /proc/maps, read+parse the ELF symbol table,
+// read _Py_DebugOffsets) is expensive and stable for the life of a process, so
+// we cache it per pid instead of redoing it on every snapshot — a large speedup
+// for repeated remote sampling (more samples/sec → better resolution).
+#[cfg(target_os = "linux")]
+fn resolve_cache() -> &'static std::sync::Mutex<std::collections::HashMap<i32, (usize, DebugOffsets)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<i32, (usize, DebugOffsets)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Drop the cached interpreter resolution for `pid` (e.g. before a fresh session).
+#[cfg(target_os = "linux")]
+pub fn forget_pid(pid: i32) {
+    resolve_cache().lock().unwrap().remove(&pid);
+}
+
 #[cfg(target_os = "linux")]
 pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, u64, Vec<String>)>> {
-    let details = interpreter_details(pid)?;
-    let minor = (details.version_hex >> 16) & 0xff;
-    let off = read_debug_offsets(pid, details.py_runtime_addr, minor)?;
-
+    let cached = resolve_cache().lock().unwrap().get(&pid).copied();
+    let (runtime_addr, off) = match cached {
+        Some(c) => c,
+        None => {
+            let details = interpreter_details(pid)?;
+            let minor = (details.version_hex >> 16) & 0xff;
+            let off = read_debug_offsets(pid, details.py_runtime_addr, minor)?;
+            resolve_cache().lock().unwrap().insert(pid, (details.py_runtime_addr, off));
+            (details.py_runtime_addr, off)
+        }
+    };
     // Reads while walking are best-effort: a frame/code object can be freed or
     // moved by the target between reads (it keeps running while we sample), so a
     // single EFAULT must NOT abort the whole snapshot. We treat a failed pointer
@@ -606,7 +631,7 @@ pub fn sample_stacks(pid: i32) -> std::io::Result<Vec<(char, u64, Vec<String>)>>
     let g = |addr: usize| read_ptr(pid, addr).unwrap_or(0);
 
     let mut stacks = Vec::new();
-    let mut interp = g(details.py_runtime_addr + off.interp_head);
+    let mut interp = g(runtime_addr + off.interp_head);
     let mut interp_guard = 0;
     while interp != 0 && interp_guard < 64 {
         interp_guard += 1;
@@ -695,6 +720,17 @@ pub fn attach_sample(_py: Python<'_>, _pid: i32) -> PyResult<Py<PyAny>> {
         "remote sampling is only implemented on Linux",
     ))
 }
+
+/// Forget the cached interpreter resolution for `pid` (call at session end).
+#[cfg(target_os = "linux")]
+#[pyfunction]
+pub fn attach_forget(_py: Python<'_>, pid: i32) {
+    forget_pid(pid);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[pyfunction]
+pub fn attach_forget(_py: Python<'_>, _pid: i32) {}
 
 #[cfg(target_os = "linux")]
 #[pyfunction]

@@ -23,15 +23,44 @@ Django (once at startup, e.g. in AppConfig.ready)::
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from contextlib import contextmanager
 
 from rabbitinspect import _core
 
+_SKIP_DIRS = ('site-packages', 'dist-packages', '.venv', 'venv')
+_PKG_DIR = os.path.dirname(os.path.abspath(__file__))  # the rabbitinspect package itself
 
-def record_query(sql: str, duration_ms: float) -> None:
+
+def _query_origin() -> str:
+    """Walk the stack for the first application frame that issued the query.
+
+    Skips this package, the ORM/driver (site-packages / venv), and synthetic
+    frames, so the report can point at the app line that triggered the query.
+    """
+    frame = sys._getframe(1)
+    while frame is not None:
+        fn = frame.f_code.co_filename
+        parts = fn.split(os.sep)
+        if (
+            not fn.startswith('<')
+            and not os.path.abspath(fn).startswith(_PKG_DIR)
+            and not any(d in parts for d in _SKIP_DIRS)
+        ):
+            return f'{fn}:{frame.f_lineno}'
+        frame = frame.f_back
+    return ''
+
+
+def record_query(sql: str, duration_ms: float, origin: str | None = None) -> None:
     """Record a query directly (no-op if the profiler is not running)."""
-    _core.perf_record_query(str(sql), float(duration_ms))
+    if not _core.perf_running():
+        return
+    if origin is None:
+        origin = _query_origin()
+    _core.perf_record_query(str(sql), float(duration_ms), origin)
 
 
 @contextmanager

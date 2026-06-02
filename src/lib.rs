@@ -70,6 +70,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_fixes, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_start, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_stop, m)?)?;
+    m.add_function(wrap_pyfunction!(perf::perf_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_running, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_now_ms, m)?)?;
     m.add_function(wrap_pyfunction!(perf::perf_record_span, m)?)?;
@@ -80,5 +81,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(attach::attach_python_info, m)?)?;
     m.add_function(wrap_pyfunction!(attach::attach_interpreter_info, m)?)?;
     m.add_function(wrap_pyfunction!(attach::attach_sample, m)?)?;
+    m.add_function(wrap_pyfunction!(attach::attach_forget, m)?)?;
     Ok(())
 }
