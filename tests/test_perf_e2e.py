@@ -306,6 +306,79 @@ def test_csv_export_neutralizes_formula_injection(tmp_path):
     assert lines[2].startswith('safe,')
 
 
+def _rich_result():
+    from rabbitinspect.perf import aggregate, analyze_hotspots
+
+    raw = {
+        'frames': ['leaf\t/app/views.py\t12', 'mid\t/app/svc.py\t30',
+                   'idle\t/usr/lib/python3.14/selectors.py\t400'],
+        'stacks': [[0, 1], [1], [2]], 'ts': [1.0, 2.0, 3.0], 'tids': [1, 1, 1],
+        'rss': [[1.0, 5e7]],
+        'spans': [{'method': 'GET', 'route': '/x', 'status': 200, 'start_ms': 0.0, 'end_ms': 2.0}],
+        'queries': [{'ts_ms': 1.0, 'sql': f'SELECT {i}', 'duration_ms': 1.0, 'origin': '/app/views.py:12'}
+                    for i in range(5)],
+        'duration_ms': 5.0, 'sample_count': 3, 'truncated': False,
+    }
+    r = aggregate(raw)
+    r.interval_ms = 5.0
+    analyze_hotspots(r)
+    return r
+
+
+def test_report_metadata_header():
+    from rabbitinspect.perf import render_html
+
+    html = render_html(_rich_result(), title='T')
+    assert 'class="sub">' in html
+    assert 'Python' in html
+    assert 'interval 5 ms' in html  # interval_ms shown when known
+
+
+def test_report_sticky_nav_links_present_sections():
+    from rabbitinspect.perf import render_html
+
+    html = render_html(_rich_result(), app_root='/app')
+    assert '<nav class="toc">' in html
+    # sections that have content are linked; ones without are not
+    assert 'href="#s-db"' in html       # queries present
+    assert 'href="#s-req"' in html      # spans present
+    assert 'href="#s-flame"' in html    # always
+    assert 'href="#top"' in html        # back-to-top
+
+
+def test_report_nav_omits_absent_sections():
+    from rabbitinspect.perf import ProfileResult, render_html
+
+    empty = ProfileResult(duration_ms=1.0, sample_count=0, truncated=False, functions=[], folded=[], rss=[])
+    html = render_html(empty)
+    assert 'href="#s-db"' not in html      # no queries
+    assert 'href="#s-alloc"' not in html   # no allocations
+    assert 'href="#s-flame"' in html       # always-present sections still linked
+
+
+def test_report_sortable_and_app_filter_markup():
+    from rabbitinspect.perf import render_html
+
+    html = render_html(_rich_result(), app_root='/app')
+    assert 'onclick="rabSort(this)"' in html
+    assert 'function rabSort' in html
+    # app/dep classification for the client-side "my code" toggle
+    assert 'data-app="1"' in html  # /app/views.py
+    assert 'data-app="0"' in html  # selectors.py (stdlib)
+    assert 'rabAppOnly' in html
+    # keyboard shortcuts
+    assert 'addEventListener("keydown"' in html
+
+
+def test_heuristic_app_classification():
+    from rabbitinspect.perf import _heuristic_app
+
+    assert _heuristic_app('/home/me/proj/app/views.py') is True
+    assert _heuristic_app('/home/me/proj/.venv/lib/python3.14/site-packages/django/x.py') is False
+    assert _heuristic_app('<frozen importlib._bootstrap>') is False
+    assert _heuristic_app('') is False
+
+
 def test_save_load_diff_self_zero_delta(tmp_path):
     from rabbitinspect.perf import diff_profiles, profile_script
 

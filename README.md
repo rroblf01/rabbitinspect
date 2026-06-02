@@ -352,7 +352,7 @@ The report includes:
 - **Request timeline** + per-endpoint **p50/p95/p99**.
 - **Database** section: slowest queries with the **app line that issued each query**, and **N+1 detection** (repeated query shapes within one request).
 - **Hotspots with lint findings**: the hottest functions cross-referenced against rabbitinspect's own static rules — the static perf rules pointed straight at the code that dominates runtime.
-- **Report UX**: a function **search box**, a **dark-mode** toggle, and a one-click **functions.csv** download.
+- **Report UX**: a **sticky section nav** (jump links + back-to-top), **sortable** function tables (click a column header), a function **search box** (`/` to focus, `Esc` to clear), a **"my code"** toggle that hides stdlib/dependency rows, a **dark-mode** toggle, a run **metadata** sub-header (Python version, platform, timestamp, sampling interval), and a one-click **functions.csv** download.
 
 ### Exact per-line timing (`@line_profile`)
 

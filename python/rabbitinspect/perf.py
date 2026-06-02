@@ -168,6 +168,7 @@ class ProfileResult:
     on_cpu_ms: float = 0.0  # wall time sampled with at least one thread on-CPU
     off_cpu_ms: float = 0.0  # wall time sampled fully waiting (sleep / I/O / lock)
     mem_allocations: list['MemAlloc'] = field(default_factory=list)
+    interval_ms: float = 0.0  # sampling interval used (0 = unknown, e.g. a loaded diff)
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -538,6 +539,7 @@ class Profiler:
             mem = _collect_tracemalloc(snapshot)
         self.result = aggregate(raw)
         self.result.mem_allocations = mem
+        self.result.interval_ms = self.interval_ms
 
 
 # ── hotspot ↔ lint cross-reference ───────────────────────────────────────────
@@ -678,21 +680,38 @@ def _line_detail(f: FunctionStat, cache: dict[str, list[str] | None]) -> str:
     )
 
 
-def _func_rows(functions: list[FunctionStat], limit: int = 100) -> str:
+# Sortable header shared by the function tables. Each <th> sorts the table it
+# lives in (rabSort); data-num marks numeric columns.
+_FUNC_THEAD = (
+    '<thead><tr>'
+    '<th class="sortable" onclick="rabSort(this)" data-num="0">Function</th>'
+    '<th class="sortable" onclick="rabSort(this)" data-num="0">File</th>'
+    '<th class="sortable num" onclick="rabSort(this)" data-num="1">Self ms</th>'
+    '<th class="sortable num" onclick="rabSort(this)" data-num="1">Total ms</th>'
+    '<th class="sortable num" onclick="rabSort(this)" data-num="1">Wait ms</th>'
+    '<th class="sortable num" onclick="rabSort(this)" data-num="1">Self %</th>'
+    '</tr></thead>'
+)
+
+
+def _func_rows(functions: list[FunctionStat], limit: int = 100, app_root: str | None = None) -> str:
     rows = []
     src_cache: dict[str, list[str] | None] = {}
+    root = os.path.realpath(app_root) if app_root else None
     for f in functions[:limit]:
         bar = min(100.0, f.self_pct)
         has_detail = bool(f.line_times)
         marker = '<span class="tw">▸</span> ' if has_detail else ''
+        is_app = _is_app_frame(f.file, root) if root else _heuristic_app(f.file)
+        cls = 'frow fn' if has_detail else 'frow'
         rows.append(
-            f'<tr class="{"fn" if has_detail else ""}">'
-            f'<td class="name">{marker}{html.escape(f.name)}</td>'
-            f'<td class="file">{html.escape(f.file)}{f":{f.line}" if f.line else ""}</td>'
-            f'<td class="num">{f.self_ms:.1f}</td>'
-            f'<td class="num">{f.total_ms:.1f}</td>'
-            f'<td class="num">{f.off_cpu_ms:.1f}</td>'
-            f'<td class="bar"><span style="width:{bar:.1f}%"></span>'
+            f'<tr class="{cls}" data-app="{1 if is_app else 0}">'
+            f'<td class="name" data-v="{html.escape(f.name)}">{marker}{html.escape(f.name)}</td>'
+            f'<td class="file" data-v="{html.escape(f.file)}">{html.escape(f.file)}{f":{f.line}" if f.line else ""}</td>'
+            f'<td class="num" data-v="{f.self_ms:.4f}">{f.self_ms:.1f}</td>'
+            f'<td class="num" data-v="{f.total_ms:.4f}">{f.total_ms:.1f}</td>'
+            f'<td class="num" data-v="{f.off_cpu_ms:.4f}">{f.off_cpu_ms:.1f}</td>'
+            f'<td class="bar" data-v="{f.self_pct:.4f}"><span style="width:{bar:.1f}%"></span>'
             f'<em>{f.self_pct:.1f}%</em></td>'
             '</tr>'
         )
@@ -721,6 +740,40 @@ def _is_app_frame(file: str, root: str) -> bool:
     return not any(p in ('site-packages', 'dist-packages', '.venv', 'venv') for p in parts)
 
 
+def _stdlib_roots() -> tuple[str, ...]:
+    """Filesystem roots that hold the stdlib / installed packages, used to guess
+    whether a frame is application code when no explicit --app-root was given."""
+    import sysconfig
+
+    roots: set[str] = set()
+    try:
+        paths = sysconfig.get_paths()
+    except Exception:
+        paths = {}
+    for key in ('stdlib', 'platstdlib', 'purelib', 'platlib'):
+        p = paths.get(key)
+        if p:
+            roots.add(os.path.realpath(p).replace('\\', '/'))
+    for base in (sys.prefix, sys.base_prefix):
+        if base:
+            roots.add(os.path.realpath(base).replace('\\', '/'))
+    return tuple(roots)
+
+
+_STDLIB_ROOTS = _stdlib_roots()
+
+
+def _heuristic_app(file: str) -> bool:
+    """Best-effort 'is this the user's own code?' without an explicit app root:
+    exclude synthetic frames, site/dist-packages, virtualenvs, and the stdlib."""
+    if not file or file.startswith('<'):
+        return False
+    f = (os.path.realpath(file) if os.path.isabs(file) else file).replace('\\', '/')
+    if any(seg in f for seg in ('/site-packages/', '/dist-packages/', '/.venv/', '/venv/')):
+        return False
+    return not any(f == r or f.startswith(r + '/') for r in _STDLIB_ROOTS)
+
+
 def _app_functions_section(functions: list[FunctionStat], app_root: str | None) -> str:
     if not app_root:
         return ''
@@ -735,10 +788,10 @@ def _app_functions_section(functions: list[FunctionStat], app_root: str | None) 
         )
     return f"""
   <h2>Top application functions <span class="muted">(your code under {html.escape(root)}; excludes stdlib &amp; dependencies)</span></h2>
-  <table>
-    <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th class="num">Wait ms</th><th>Self %</th></tr></thead>
+  <table class="sortable-table">
+    {_FUNC_THEAD}
     <tbody>
-    {_func_rows(app)}
+    {_func_rows(app, app_root=app_root)}
     </tbody>
   </table>
 """
@@ -1280,6 +1333,40 @@ def render_html(
         if result.truncated
         else ''
     )
+
+    # Run metadata (so a shared report is self-describing).
+    import platform as _platform
+    from datetime import datetime
+
+    meta_bits = [
+        f'Python {_platform.python_version()}',
+        f'{_platform.system()} {_platform.machine()}'.strip(),
+        datetime.now().strftime('%Y-%m-%d %H:%M'),
+    ]
+    if result.interval_ms:
+        meta_bits.append(f'interval {result.interval_ms:g} ms')
+    meta_bits.append(f'{result.sample_count} samples')
+    meta_line = html.escape(' · '.join(b for b in meta_bits if b))
+
+    # Sticky section nav — only link sections that actually render.
+    app_present = bool(app_root) and any(
+        _is_app_frame(f.file, os.path.realpath(app_root)) for f in result.functions
+    )
+    nav_items = [
+        ('s-mem', 'Memory', True),
+        ('s-alloc', 'Allocations', bool(result.mem_allocations)),
+        ('s-req', 'Requests', bool(result.spans)),
+        ('s-db', 'Database', bool(result.queries)),
+        ('s-hot', 'Hotspots', bool(result.hotspot_lints)),
+        ('s-flame', 'Flamegraph', True),
+        ('s-chart', 'Flame chart', bool(segments)),
+        ('s-appfn', 'App functions', app_present),
+        ('s-fn', 'Functions', True),
+        ('s-folded', 'Folded', True),
+    ]
+    nav_links = ' '.join(
+        f'<a href="#{sid}">{label}</a>' for sid, label, present in nav_items if present
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1289,12 +1376,20 @@ def render_html(
   body {{ font: 14px/1.5 system-ui, sans-serif; margin: 0; color: #222; background: #fafafa; }}
   header {{ background: #1f2937; color: #fff; padding: 16px 24px; }}
   header h1 {{ margin: 0; font-size: 18px; }}
+  header .sub {{ margin-top: 4px; font-size: 12px; color: #9ca3af; }}
   main {{ padding: 24px; max-width: 1100px; margin: 0 auto; }}
+  nav.toc {{ position: sticky; top: 0; z-index: 20; background: #fff; border-bottom: 1px solid #e5e7eb;
+            padding: 8px 24px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }}
+  nav.toc a {{ color: #2563eb; text-decoration: none; }}
+  nav.toc a:hover {{ text-decoration: underline; }}
+  nav.toc .up {{ margin-left: auto; }}
   .cards {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }}
   .card {{ background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; min-width: 140px; }}
   .card .v {{ font-size: 22px; font-weight: 600; }}
   .card .k {{ color: #6b7280; font-size: 12px; text-transform: uppercase; }}
   h2 {{ font-size: 15px; border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; }}
+  section[id] {{ scroll-margin-top: 52px; }}
+  section:empty {{ display: none; }}
   table {{ width: 100%; border-collapse: collapse; background: #fff; }}
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }}
   th {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
@@ -1331,8 +1426,14 @@ def render_html(
   .toolbar {{ display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }}
   #fsearch {{ flex: 1; max-width: 360px; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font: inherit; }}
   .tbtn {{ padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font: inherit; }}
+  .tbtn[data-on="1"] {{ background: #dbeafe; border-color: #93c5fd; }}
+  th.sortable {{ cursor: pointer; user-select: none; }}
+  th.sortable:hover {{ color: #2563eb; }}
+  th .si {{ color: #2563eb; }}
   body.dark {{ background: #0f172a; color: #e5e7eb; }}
   body.dark header {{ background: #020617; }}
+  body.dark nav.toc {{ background: #0b1220; border-color: #334155; }}
+  body.dark .tbtn[data-on="1"] {{ background: #1e3a5f; border-color: #2563eb; }}
   body.dark .card, body.dark table, body.dark .chart, body.dark .hotspot, body.dark details pre, body.dark #fsearch, body.dark .tbtn {{ background: #1e293b; border-color: #334155; color: #e5e7eb; }}
   body.dark td, body.dark th {{ border-color: #334155; }}
   body.dark tr.fndetail > td {{ background: #16233b; }}
@@ -1340,11 +1441,13 @@ def render_html(
 </style>
 </head>
 <body>
-<header><h1>{html.escape(title)}</h1></header>
+<header id="top"><h1>{html.escape(title)}</h1><div class="sub">{meta_line}</div></header>
+<nav class="toc">{nav_links}<a href="#top" class="up" title="Back to top">▲ top</a></nav>
 <main>
   {trunc}
   <div class="toolbar">
-    <input id="fsearch" placeholder="filter functions…" oninput="rabFilter(this.value)">
+    <input id="fsearch" placeholder="filter functions… ( / )" oninput="rabFilter(this.value)">
+    <button class="tbtn" data-on="0" onclick="rabAppOnly(this)" title="Hide stdlib &amp; dependency rows">☐ my code</button>
     <button class="tbtn" onclick="document.body.classList.toggle('dark')">🌓 theme</button>
     <button class="tbtn" onclick="rabExportCsv()">⬇ functions.csv</button>
   </div>
@@ -1356,33 +1459,44 @@ def render_html(
     {cpu_card}
   </div>
 
+  <section id="s-mem">
   <h2>Memory over time</h2>
   {_rss_svg(result.rss)}
-  {_mem_section(result.mem_allocations)}
-  {_requests_section(result)}
-  {_endpoint_flamegraphs(result)}
-  {_database_section(result)}
-  {_hotspot_lints_section(result, app_root)}
+  </section>
+  <section id="s-alloc">{_mem_section(result.mem_allocations)}</section>
+  <section id="s-req">{_requests_section(result)}
+  {_endpoint_flamegraphs(result)}</section>
+  <section id="s-db">{_database_section(result)}</section>
+  <section id="s-hot">{_hotspot_lints_section(result, app_root)}</section>
+  <section id="s-flame">
   <h2>Flamegraph <span class="muted">(width = share of samples; click to zoom, click background to reset)</span></h2>
   {_flamegraph_svg(result)}
-  {flamechart}
-  {_app_functions_section(result.functions, app_root)}
+  </section>
+  <section id="s-chart">{flamechart}</section>
+  <section id="s-appfn">{_app_functions_section(result.functions, app_root)}</section>
+  <section id="s-fn">
   <h2>All functions by self time <span class="muted">(includes stdlib, dependencies &amp; idle threads)</span></h2>
-  <table>
-    <thead><tr><th>Function</th><th>File</th><th class="num">Self ms</th><th class="num">Total ms</th><th class="num">Wait ms</th><th>Self %</th></tr></thead>
+  <table class="sortable-table">
+    {_FUNC_THEAD}
     <tbody>
-    {_func_rows(result.functions)}
+    {_func_rows(result.functions, app_root=app_root)}
     </tbody>
   </table>
+  </section>
 
+  <section id="s-folded">
   <h2>Folded stacks <span class="muted">(paste into a flamegraph tool)</span></h2>
   <details><summary>Show {len(result.folded)} collapsed stacks</summary>
   <pre>{html.escape(folded_text)}</pre>
   </details>
+  </section>
 
   <script type="application/json" id="rabbitinspect-perf-data">{payload}</script>
   <script>document.querySelectorAll("tr.fn").forEach(function(r){{r.addEventListener("click",function(){{var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail")){{var open=d.style.display==="none";d.style.display=open?"table-row":"none";var tw=r.querySelector(".tw");if(tw)tw.textContent=open?"▾":"▸";}}}});}});
   function rabFilter(q){{q=q.toLowerCase();document.querySelectorAll("table tr").forEach(function(r){{var n=r.querySelector("td.name");if(!n)return;var hit=!q||r.textContent.toLowerCase().indexOf(q)>=0;r.style.display=hit?"":"none";var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail"))d.style.display="none";}});}}
+  function rabAppOnly(btn){{var on=btn.getAttribute("data-on")!=="1";btn.setAttribute("data-on",on?"1":"0");btn.textContent=on?"☑ my code":"☐ my code";document.querySelectorAll("tr[data-app]").forEach(function(r){{r.style.display=(on&&r.getAttribute("data-app")==="0")?"none":"";var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail"))d.style.display="none";}});}}
+  function rabSort(th){{var tb=th.closest("table").tBodies[0];if(!tb)return;var idx=[].indexOf.call(th.parentNode.children,th);var num=th.getAttribute("data-num")==="1";var desc=th.getAttribute("data-dir")!=="desc";[].forEach.call(th.parentNode.children,function(h){{h.removeAttribute("data-dir");var s=h.querySelector(".si");if(s)s.remove();}});th.setAttribute("data-dir",desc?"desc":"asc");var rows=[].slice.call(tb.rows),pairs=[],i=0;while(i<rows.length){{var p=[rows[i]];i++;if(i<rows.length&&rows[i].classList.contains("fndetail")){{p.push(rows[i]);i++;}}pairs.push(p);}}function key(r){{var c=r.cells[idx],v=c.getAttribute("data-v");v=v!==null?v:c.textContent;return num?(parseFloat(v)||0):String(v).toLowerCase();}}pairs.sort(function(a,b){{var x=key(a[0]),y=key(b[0]);if(x<y)return desc?1:-1;if(x>y)return desc?-1:1;return 0;}});pairs.forEach(function(p){{p.forEach(function(r){{tb.appendChild(r);}});}});var si=document.createElement("span");si.className="si";si.textContent=desc?" ↓":" ↑";th.appendChild(si);}}
+  document.addEventListener("keydown",function(e){{var s=document.getElementById("fsearch");if(e.key==="/"&&document.activeElement!==s){{e.preventDefault();if(s)s.focus();}}else if(e.key==="Escape"&&s){{s.value="";rabFilter("");s.blur();}}}});
   function rabExportCsv(){{var el=document.getElementById("rabbitinspect-perf-data");if(!el)return;var fns=JSON.parse(el.textContent).functions||[];var rows=["function,file,line,self_ms,total_ms,off_cpu_ms,self_pct"];fns.forEach(function(f){{rows.push([f.name,f.file,f.line,f.self_ms,f.total_ms,f.off_cpu_ms,f.self_pct].map(function(x){{var s=String(x);if(s&&"=+-@\\t\\r".indexOf(s[0])>=0)s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}}).join(","));}});var blob=new Blob([rows.join("\\n")],{{type:"text/csv"}});var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="functions.csv";a.click();}}</script>
 </main>
 </body>
@@ -1969,6 +2083,7 @@ def profile_asyncio(main, interval_ms: float = 10.0) -> ProfileResult:
             await main()
         finally:
             result = sampler.stop()
+        result.interval_ms = interval_ms
         return result
 
     return asyncio.run(_driver())
@@ -2083,6 +2198,7 @@ def sample_remote_multi(
         'truncated': False,
     }
     result = aggregate(raw)
+    result.interval_ms = interval_ms
     analyze_hotspots(result)
     return result
 

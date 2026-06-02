@@ -33,7 +33,11 @@ A Python **performance toolkit**: static lints plus a sampling runtime profiler.
   profile JSON to enable it.
 - **Report UX** — function search/filter box, dark-mode toggle, and a one-click
   **functions.csv** download in the HTML report; `export_functions_csv` / CLI
-  `perf run --csv`.
+  `perf run --csv`. Plus: a **sticky section nav** (jump links + back-to-top, only
+  for sections that rendered), **sortable function tables** (click a column header),
+  a **"my code" toggle** that hides stdlib/dependency rows client-side, a **run
+  metadata** sub-header (Python version, platform, timestamp, sampling interval,
+  sample count), and **keyboard shortcuts** (`/` focuses the filter, `Esc` clears).
 
 ### Fixed — release hardening
 

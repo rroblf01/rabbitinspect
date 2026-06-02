@@ -221,7 +221,7 @@ def test_aggregate_line_times_breakdown():
 
     html = result.to_html()
     # the row is expandable and the per-line detail table is embedded
-    assert 'class="fn"' in html
+    assert 'frow fn"' in html
     assert 'fndetail' in html
     assert 'table class="lines"' in html or 'class="lines"' in html
     # the toggle script is wired
@@ -602,7 +602,7 @@ def test_line_profile_html():
     f()
     html_out = line_profile_html(f)
     assert 'line profile' in html_out.lower()
-    assert 'class="fn"' in html_out  # expandable per-line row
+    assert 'frow fn"' in html_out  # expandable per-line row
 
 
 def test_perf_snapshot_while_running():
