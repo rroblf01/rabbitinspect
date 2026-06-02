@@ -270,7 +270,7 @@ def test_full_run_pipeline(tmp_path):
     rc = run_perf_cli(['run', '--out', str(html), '--speedscope', str(ss),
                        '--json', str(pj), '--csv', str(csv), '--interval', '1', str(src)])
     assert rc == 0
-    assert 'work' in html.read_text()
+    assert 'work' in html.read_text(encoding='utf-8')
     assert json.loads(ss.read_text())['exporter'] == 'rabbitinspect'
     assert csv.read_text().startswith('function,file,line')
 
@@ -281,7 +281,7 @@ def test_full_run_pipeline(tmp_path):
     diff = tmp_path / 'diff.html'
     rc = run_perf_cli(['diff', str(pj), str(pj), '--out', str(diff)])
     assert rc == 0
-    assert 'Before' in diff.read_text() and 'After' in diff.read_text()
+    assert 'Before' in diff.read_text(encoding='utf-8') and 'After' in diff.read_text(encoding='utf-8')
 
 
 def test_csv_export_neutralizes_formula_injection(tmp_path):

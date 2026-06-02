@@ -637,7 +637,7 @@ def test_install_dump_handler(tmp_path):
         time.sleep(0.1)
         assert _core.perf_running()  # still running after dump
         assert out.exists()
-        assert 'functions by self time' in out.read_text()
+        assert 'functions by self time' in out.read_text(encoding='utf-8')
     finally:
         if _core.perf_running():
             _core.perf_stop()

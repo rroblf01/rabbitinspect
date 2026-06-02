@@ -205,6 +205,6 @@ def test_perf_diff_cli(tmp_path):
     diff_html = tmp_path / 'diff.html'
     rc = run_perf_cli(['diff', str(before), str(after), '--out', str(diff_html)])
     assert rc == 0
-    text = diff_html.read_text()
+    text = diff_html.read_text(encoding='utf-8')
     assert 'Before' in text and 'After' in text
     assert 'hot' in text

@@ -235,4 +235,4 @@ def test_wsgi_slow_request_dump(tmp_path):
         _core.perf_stop()
     dumps = list(dump_dir.glob('slow-*.html')) if dump_dir.exists() else []
     assert dumps, 'no slow-request report written'
-    assert 'functions by self time' in dumps[0].read_text()
+    assert 'functions by self time' in dumps[0].read_text(encoding='utf-8')
