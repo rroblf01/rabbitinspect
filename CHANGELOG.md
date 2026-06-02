@@ -51,6 +51,10 @@ A Python **performance toolkit**: static lints plus a sampling runtime profiler.
   `load_profile_json` tolerates unknown `FunctionStat` fields (version skew).
 - **`Profiler(trace_memory=True)`** no longer leaves `tracemalloc` running if the
   sampler refuses to start, and never stops `tracemalloc` it did not itself start.
+- **CSV formula injection** — both CSV exports (the `functions.csv` download and
+  `export_functions_csv`) now prefix any cell starting with `=`, `+`, `-`, `@` (or
+  a leading tab/CR) with a single quote, so a crafted function/file name can't be
+  executed as a formula when the file is opened in Excel/Sheets.
 
 Deferred (roadmap): macOS/Windows attach (needs `mach_vm_read` / Windows APIs —
 not validated yet) and a GIL-contention metric (needs interpreter-level

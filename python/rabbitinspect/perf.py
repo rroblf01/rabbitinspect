@@ -1383,7 +1383,7 @@ def render_html(
   <script type="application/json" id="rabbitinspect-perf-data">{payload}</script>
   <script>document.querySelectorAll("tr.fn").forEach(function(r){{r.addEventListener("click",function(){{var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail")){{var open=d.style.display==="none";d.style.display=open?"table-row":"none";var tw=r.querySelector(".tw");if(tw)tw.textContent=open?"▾":"▸";}}}});}});
   function rabFilter(q){{q=q.toLowerCase();document.querySelectorAll("table tr").forEach(function(r){{var n=r.querySelector("td.name");if(!n)return;var hit=!q||r.textContent.toLowerCase().indexOf(q)>=0;r.style.display=hit?"":"none";var d=r.nextElementSibling;if(d&&d.classList.contains("fndetail"))d.style.display="none";}});}}
-  function rabExportCsv(){{var el=document.getElementById("rabbitinspect-perf-data");if(!el)return;var fns=JSON.parse(el.textContent).functions||[];var rows=["function,file,line,self_ms,total_ms,off_cpu_ms,self_pct"];fns.forEach(function(f){{rows.push([f.name,f.file,f.line,f.self_ms,f.total_ms,f.off_cpu_ms,f.self_pct].map(function(x){{return '"'+String(x).replace(/"/g,'""')+'"';}}).join(","));}});var blob=new Blob([rows.join("\\n")],{{type:"text/csv"}});var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="functions.csv";a.click();}}</script>
+  function rabExportCsv(){{var el=document.getElementById("rabbitinspect-perf-data");if(!el)return;var fns=JSON.parse(el.textContent).functions||[];var rows=["function,file,line,self_ms,total_ms,off_cpu_ms,self_pct"];fns.forEach(function(f){{rows.push([f.name,f.file,f.line,f.self_ms,f.total_ms,f.off_cpu_ms,f.self_pct].map(function(x){{var s=String(x);if(s&&"=+-@\\t\\r".indexOf(s[0])>=0)s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}}).join(","));}});var blob=new Blob([rows.join("\\n")],{{type:"text/csv"}});var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="functions.csv";a.click();}}</script>
 </main>
 </body>
 </html>
@@ -1681,6 +1681,16 @@ def load_profile_json(path: str) -> ProfileResult:
     )
 
 
+def _csv_safe(value: object) -> str:
+    """Neutralize spreadsheet formula injection: a cell starting with =, +, -, @
+    (or a leading tab/CR) is interpreted as a formula by Excel/Sheets. Prefix such
+    cells with a single quote so they're treated as text."""
+    s = str(value)
+    if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + s
+    return s
+
+
 def export_functions_csv(result: ProfileResult, path: str) -> None:
     """Write the per-function table as CSV (function,file,line,self_ms,total_ms,
     off_cpu_ms,self_pct)."""
@@ -1690,7 +1700,8 @@ def export_functions_csv(result: ProfileResult, path: str) -> None:
         w = csv.writer(f)
         w.writerow(['function', 'file', 'line', 'self_ms', 'total_ms', 'off_cpu_ms', 'self_pct'])
         for fn in result.functions:
-            w.writerow([fn.name, fn.file, fn.line, f'{fn.self_ms:.3f}', f'{fn.total_ms:.3f}',
+            w.writerow([_csv_safe(fn.name), _csv_safe(fn.file), fn.line,
+                        f'{fn.self_ms:.3f}', f'{fn.total_ms:.3f}',
                         f'{fn.off_cpu_ms:.3f}', f'{fn.self_pct:.3f}'])
 
 

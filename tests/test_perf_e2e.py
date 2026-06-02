@@ -284,6 +284,28 @@ def test_full_run_pipeline(tmp_path):
     assert 'Before' in diff.read_text() and 'After' in diff.read_text()
 
 
+def test_csv_export_neutralizes_formula_injection(tmp_path):
+    """A function/file name starting with =,+,-,@ must be prefixed with ' so a
+    spreadsheet treats it as text, not a formula."""
+    from rabbitinspect.perf import FunctionStat, ProfileResult, export_functions_csv
+
+    result = ProfileResult(
+        duration_ms=10.0, sample_count=1, truncated=False, folded=[], rss=[],
+        functions=[
+            FunctionStat('=cmd|calc', '@evil.py', 1.0, 2.0, 50.0, 100.0),
+            FunctionStat('safe', '/ok.py', 1.0, 2.0, 50.0, 100.0),
+        ],
+    )
+    path = tmp_path / 'fn.csv'
+    export_functions_csv(result, str(path))
+    lines = path.read_text().splitlines()
+    # dangerous cells get a leading ' so spreadsheets treat them as text
+    assert lines[1].startswith("'=cmd|calc,")
+    assert "'@evil.py" in lines[1]
+    # the safe row is untouched (no spurious quote prefix)
+    assert lines[2].startswith('safe,')
+
+
 def test_save_load_diff_self_zero_delta(tmp_path):
     from rabbitinspect.perf import diff_profiles, profile_script
 
