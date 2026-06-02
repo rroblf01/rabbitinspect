@@ -79,13 +79,26 @@ class WSGIProfilerMiddleware:
             return start_response(status, headers, exc_info)
 
         result = self.app(environ, _start_response)
-        end = _core.perf_now_ms()
-        method = environ.get('REQUEST_METHOD', 'GET')
-        route = environ.get('PATH_INFO', '/') or '/'
-        _core.perf_record_span(method, route, captured['status'], start, end)
-        if self.slow_request_ms is not None and (end - start) >= self.slow_request_ms:
-            _dump_slow(method, route, end - start, self.dump_dir)
-        return result
+
+        # A WSGI body is a lazy iterable the server consumes *after* we return.
+        # Recording the span here would time only app setup (near-zero for
+        # streaming/generator responses) and miss the final status. Wrap the
+        # iterable so the span is recorded when the body is fully consumed (or
+        # the server closes it), and forward the underlying close().
+        def _instrumented():
+            try:
+                yield from result
+            finally:
+                end = _core.perf_now_ms()
+                method = environ.get('REQUEST_METHOD', 'GET')
+                route = environ.get('PATH_INFO', '/') or '/'
+                _core.perf_record_span(method, route, captured['status'], start, end)
+                if self.slow_request_ms is not None and (end - start) >= self.slow_request_ms:
+                    _dump_slow(method, route, end - start, self.dump_dir)
+                if hasattr(result, 'close'):
+                    result.close()
+
+        return _instrumented()
 
 
 class ASGIProfilerMiddleware:

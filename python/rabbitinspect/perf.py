@@ -506,11 +506,24 @@ class Profiler:
         self.result: ProfileResult | None = None
 
     def __enter__(self) -> 'Profiler':
+        self._started_tracemalloc = False
         if self.trace_memory:
             import tracemalloc
 
-            tracemalloc.start()
-        _core.perf_start(self.interval_ms, self.max_depth)
+            if not tracemalloc.is_tracing():
+                tracemalloc.start()
+                self._started_tracemalloc = True
+        try:
+            _core.perf_start(self.interval_ms, self.max_depth)
+        except Exception:
+            # Don't leave tracemalloc running if the sampler refused to start
+            # (e.g. another profiler is already active) — __exit__ won't run.
+            # Only undo what *we* started, never someone else's tracing.
+            if self._started_tracemalloc:
+                import tracemalloc
+
+                tracemalloc.stop()
+            raise
         return self
 
     def __exit__(self, *exc) -> None:
@@ -520,7 +533,8 @@ class Profiler:
             import tracemalloc
 
             snapshot = tracemalloc.take_snapshot()
-            tracemalloc.stop()
+            if getattr(self, '_started_tracemalloc', True):
+                tracemalloc.stop()
             mem = _collect_tracemalloc(snapshot)
         self.result = aggregate(raw)
         self.result.mem_allocations = mem
@@ -1641,9 +1655,19 @@ def save_profile_json(result: ProfileResult, path: str) -> None:
 
 def load_profile_json(path: str) -> ProfileResult:
     """Load a profile previously written by :func:`save_profile_json`."""
+    import dataclasses
+
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
-    functions = [FunctionStat(**d) for d in data.get('functions', [])]
+    if not isinstance(data, dict):
+        raise ValueError(f'{path}: not a profile JSON object')
+    # Tolerate version skew: keep only fields this FunctionStat knows about, so a
+    # profile written by a newer/older rabbitinspect still loads.
+    known = {fld.name for fld in dataclasses.fields(FunctionStat)}
+    functions = [
+        FunctionStat(**{k: v for k, v in d.items() if k in known})
+        for d in data.get('functions', [])
+    ]
     folded = [(s, c) for s, c in data.get('folded', [])]
     return ProfileResult(
         duration_ms=float(data.get('duration_ms', 0.0)),
@@ -2148,12 +2172,19 @@ def run_perf_cli(argv: list[str]) -> int:
             args.pid, args.duration, args.out, args.interval, _resolve_app_root(), args.also_pid
         )
     if args.cmd == 'diff':
-        before = load_profile_json(args.before)
-        after = load_profile_json(args.after)
+        try:
+            before = load_profile_json(args.before)
+            after = load_profile_json(args.after)
+        except FileNotFoundError as e:
+            print(f'Error: profile JSON not found: {e.filename}', file=sys.stderr)
+            return 1
+        except (ValueError, TypeError) as e:  # JSONDecodeError, missing/extra fields
+            print(f'Error: could not read profile JSON: {e}', file=sys.stderr)
+            return 1
         with open(args.out, 'w', encoding='utf-8') as f:
             f.write(render_diff_html(before, after))
         deltas = diff_profiles(before, after)
-        if deltas:
+        if deltas and deltas[0].delta_ms != 0.0:
             top = deltas[0]
             verb = 'slower' if top.delta_ms > 0 else 'faster'
             print(f'Biggest change: {top.name} {abs(top.delta_ms):.1f} ms {verb}', file=sys.stderr)

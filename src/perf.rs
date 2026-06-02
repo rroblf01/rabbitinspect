@@ -12,7 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -76,14 +76,15 @@ impl Samples {
 }
 
 struct Sampler {
-    stop: &'static AtomicBool,
+    stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
-    shared: &'static Mutex<Samples>,
+    shared: Arc<Mutex<Samples>>,
 }
 
-// The sampler thread holds `'static` references into these, so they must
-// outlive any thread we spawn. Leaking on start (and rebuilding on the next
-// start) keeps the borrow checker happy without unsafe lifetime tricks.
+// The sampler thread shares ownership of `stop`/`shared` via `Arc`, so the
+// buffers are freed when both the thread and the `Sampler` drop. (An earlier
+// version `Box::leak`'d these, which leaked one full sample buffer per
+// start/stop cycle — unbounded growth for repeated `Profiler` use or forking.)
 fn slot() -> &'static Mutex<Option<Sampler>> {
     static S: OnceLock<Mutex<Option<Sampler>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(None))
@@ -164,16 +165,18 @@ pub fn perf_start(interval_ms: f64, max_depth: usize) -> PyResult<()> {
         ));
     }
 
-    let shared: &'static Mutex<Samples> = Box::leak(Box::new(Mutex::new(Samples::new())));
-    let stop: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    let shared: Arc<Mutex<Samples>> = Arc::new(Mutex::new(Samples::new()));
+    let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let interval = Duration::from_secs_f64((interval_ms.max(0.1)) / 1000.0);
 
+    let thread_shared = Arc::clone(&shared);
+    let thread_stop = Arc::clone(&stop);
     let handle = std::thread::spawn(move || loop {
-        if stop.load(Ordering::Relaxed) {
+        if thread_stop.load(Ordering::Relaxed) {
             break;
         }
         Python::attach(|py| {
-            let _ = sample_once(py, shared, max_depth);
+            let _ = sample_once(py, &thread_shared, max_depth);
         });
         std::thread::sleep(interval);
     });
