@@ -1,6 +1,6 @@
 # rabbitinspect
 
-A **Python code performance analyzer** written in **Rust** (via PyO3). It scans your Python source code and points out patterns that can be made faster, more memory-efficient, or more idiomatic — with optional automatic fixes.
+A **Python performance toolkit** written in **Rust** (via PyO3). Two halves that work together: a **static analyzer** that scans your source for patterns that can be made faster, more memory-efficient, or more idiomatic (with optional automatic fixes), and a **sampling runtime profiler** that shows where your program actually spends its time — then cross-references the hottest functions against the static rules.
 
 ---
 
@@ -311,7 +311,7 @@ rabbitinspect src/ --ignore-category style,complexity
 
 ---
 
-## Runtime profiler (2.0 preview)
+## Runtime profiler
 
 Beyond static analysis, rabbitinspect ships a **sampling runtime profiler** written in Rust. A background thread snapshots the Python stack via `sys._current_frames()` (robust across CPython 3.10–3.14) and samples resident memory, with near-zero changes to your code. On stop it writes a **self-contained HTML report**.
 
@@ -429,7 +429,7 @@ with query_timer('SELECT ...'):  # generic
 
 Each query is tagged with the **application line that issued it** (`file:line`), so the slowest queries and N+1 groups point straight at your code.
 
-> Timings are **statistical** (sampling), not exact per-call. Attach mode is Linux-only and supports CPython 3.13+ (validated on 3.13 and 3.14; 3.11/3.12 predate CPython's remote-debug offsets). Per-function memory attribution is on the roadmap.
+> Timings are **statistical** (sampling), not exact per-call. Attach mode is Linux-only and supports CPython 3.13+ (validated on 3.13 and 3.14; 3.11/3.12 predate CPython's remote-debug offsets). Per-function memory attribution (`--memory`) works for `perf run`; in attach mode only the resident-memory timeline is available, not per-function allocations.
 
 ---
 
